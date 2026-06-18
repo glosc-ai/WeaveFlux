@@ -1,0 +1,11 @@
+{
+  "kind": "critique-panel",
+  "score": 4,
+  "axes": {
+    "clarity":      { "score": 4, "notes": "分段控件、输入区、高级选项、CTA 四级信息层级清晰。输入区获得焦点时有蓝色边框反馈。" },
+    "hierarchy":    { "score": 5, "notes": "视觉流自上而下：模式选择 → 提示词输入 → 高级选项（可折叠）→ CTA。每个区域只有一个主要动作。" },
+    "typography":   { "score": 4, "notes": "全大写标签 letter-spacing 修正至 0.07em；小号导航文字已加 tracking。等宽字体用于模型输入字段，与正文形成对比。" },
+    "motion":       { "score": 4, "notes": "过渡动画均在 150-350ms 范围内。CTA 加载旋转器 700ms 循环。已添加 prefers-reduced-motion 支持。" },
+    "brand":        { "score": 5, "notes": "严格遵循织影设计令牌：#0f172a 背景、#1e293b 表面、#10b981 仅用于 CTA、#3b82f6 用于交互元素。无 AI slop 痕迹。" }
+  }
+}
