@@ -18,10 +18,12 @@ type connectionResult struct {
 }
 
 type modelsResult struct {
-	Success bool     `json:"success"`
-	Models  []string `json:"models"`
-	Error   string   `json:"error"`
-	Debug   string   `json:"debug"`
+	Success     bool     `json:"success"`
+	Models      []string `json:"models"`
+	VideoModels []string `json:"video_models"`
+	ImageModels []string `json:"image_models"`
+	Error       string   `json:"error"`
+	Debug       string   `json:"debug"`
 }
 
 type dispatchResult struct {
@@ -75,10 +77,15 @@ type modelItem struct {
 
 type modelCollection struct {
 	Models               []string
+	VideoModels          []string
+	ImageModels          []string
 	Total                int
 	Kept                 int
+	KeptVideo            int
+	KeptImage            int
 	RejectedTextFamily   int
 	RejectedNotVideoLike int
+	RejectedNoMediaTag   int
 	Duplicate            int
 	EmptyID              int
 	Samples              []string
@@ -101,12 +108,12 @@ func TestConnection(baseURL, apiKey string) string {
 func FetchModels(baseURL, apiKey string) string {
 	collection, errMsg := fetchModelIDs(baseURL, apiKey)
 	if errMsg != "" {
-		return encodeModelsResult(false, nil, errMsg, "")
+		return encodeModelsResult(false, nil, nil, errMsg, "")
 	}
-	if len(collection.Models) == 0 {
-		return encodeModelsResult(false, nil, "No video-capable models returned by /models", collection.Debug())
+	if len(collection.VideoModels) == 0 && len(collection.ImageModels) == 0 {
+		return encodeModelsResult(false, nil, nil, "No video/image tagged models returned by /models", collection.Debug())
 	}
-	return encodeModelsResult(true, collection.Models, "", "plain request: "+collection.Debug())
+	return encodeModelsResult(true, collection.VideoModels, collection.ImageModels, "", "plain request: "+collection.Debug())
 }
 
 // DispatchVideoTask sends a T2V/I2V video generation request.
@@ -183,7 +190,30 @@ func fetchModelIDs(baseURL, apiKey string) (modelCollection, string) {
 		return modelCollection{}, fmt.Sprintf("Invalid /models response: %v", err)
 	}
 
-	return collectVideoModelIDs(payload.Data), ""
+	collection := collectMediaModelIDs(payload.Data)
+
+	if items, queryErr := fetchModelItems(baseURL, apiKey, "/models?categories=video"); queryErr == "" {
+		collection.mergeTypedModels(items, "video")
+	}
+	if items, queryErr := fetchModelItems(baseURL, apiKey, "/models?categories=image"); queryErr == "" {
+		collection.mergeTypedModels(items, "image")
+	}
+
+	return collection, ""
+}
+
+func fetchModelItems(baseURL, apiKey, path string) ([]modelItem, string) {
+	resp, errMsg := requestModelsPathWithRetry(baseURL, apiKey, path, 60*time.Second, 1)
+	if errMsg != "" {
+		return nil, errMsg
+	}
+	defer resp.Body.Close()
+
+	var payload modelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Sprintf("Invalid %s response: %v", path, err)
+	}
+	return payload.Data, ""
 }
 
 func extractTaskID(data []byte) string {
@@ -343,13 +373,15 @@ func isUnsupportedEndpoint(statusCode int, body string) bool {
 		strings.Contains(body, "unsupported endpoint")
 }
 
-func collectVideoModelIDs(items []modelItem) modelCollection {
+func collectMediaModelIDs(items []modelItem) modelCollection {
 	collection := modelCollection{
 		Models:  make([]string, 0, len(items)),
 		Total:   len(items),
 		Samples: make([]string, 0, 8),
 	}
 	models := make([]string, 0, len(items))
+	videoModels := make([]string, 0, len(items))
+	imageModels := make([]string, 0, len(items))
 	seen := make(map[string]bool, len(items))
 	for _, item := range items {
 		id := strings.TrimSpace(item.ID)
@@ -362,22 +394,27 @@ func collectVideoModelIDs(items []modelItem) modelCollection {
 			continue
 		}
 		hasVideo := hasVideoCategory(item.Categories)
-		likelyVideo := isLikelyVideoModel(id)
-		if isLikelyNonVideoModel(id) && !(hasVideo && likelyVideo) {
-			collection.RejectedTextFamily++
-			collection.addSample("text-family", id, item.Categories)
-			continue
-		}
-		if !hasVideo && !likelyVideo {
-			collection.RejectedNotVideoLike++
-			collection.addSample("not-video-like", id, item.Categories)
+		hasImage := hasImageCategory(item.Categories)
+		if !hasVideo && !hasImage {
+			collection.RejectedNoMediaTag++
+			collection.addSample("no-media-tag", id, item.Categories)
 			continue
 		}
 		seen[id] = true
 		models = append(models, id)
+		if hasVideo {
+			videoModels = append(videoModels, id)
+		}
+		if hasImage {
+			imageModels = append(imageModels, id)
+		}
 	}
 	collection.Models = models
+	collection.VideoModels = videoModels
+	collection.ImageModels = imageModels
 	collection.Kept = len(models)
+	collection.KeptVideo = len(videoModels)
+	collection.KeptImage = len(imageModels)
 	return collection
 }
 
@@ -392,12 +429,52 @@ func (c *modelCollection) addSample(reason, id string, raw json.RawMessage) {
 	c.Samples = append(c.Samples, fmt.Sprintf("%s: %s categories=%s", reason, id, categories))
 }
 
+func (c *modelCollection) mergeTypedModels(items []modelItem, mediaType string) {
+	for _, item := range items {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		c.addModel(id)
+		switch mediaType {
+		case "video":
+			if addUnique(&c.VideoModels, id) {
+				c.KeptVideo = len(c.VideoModels)
+			}
+		case "image":
+			if addUnique(&c.ImageModels, id) {
+				c.KeptImage = len(c.ImageModels)
+			}
+		}
+	}
+	c.Kept = len(c.Models)
+}
+
+func (c *modelCollection) addModel(id string) {
+	if addUnique(&c.Models, id) {
+		c.Kept = len(c.Models)
+	}
+}
+
+func addUnique(values *[]string, value string) bool {
+	for _, existing := range *values {
+		if existing == value {
+			return false
+		}
+	}
+	*values = append(*values, value)
+	return true
+}
+
 func (c modelCollection) Debug() string {
 	parts := []string{
 		fmt.Sprintf("total=%d", c.Total),
 		fmt.Sprintf("kept=%d", c.Kept),
+		fmt.Sprintf("video=%d", c.KeptVideo),
+		fmt.Sprintf("image=%d", c.KeptImage),
 		fmt.Sprintf("rejected_text_family=%d", c.RejectedTextFamily),
 		fmt.Sprintf("rejected_not_video_like=%d", c.RejectedNotVideoLike),
+		fmt.Sprintf("rejected_no_media_tag=%d", c.RejectedNoMediaTag),
 		fmt.Sprintf("duplicate=%d", c.Duplicate),
 		fmt.Sprintf("empty_id=%d", c.EmptyID),
 	}
@@ -410,6 +487,15 @@ func (c modelCollection) Debug() string {
 func hasVideoCategory(raw json.RawMessage) bool {
 	for _, token := range categoryTokens(raw) {
 		if isVideoToken(token) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasImageCategory(raw json.RawMessage) bool {
+	for _, token := range categoryTokens(raw) {
+		if isImageToken(token) {
 			return true
 		}
 	}
@@ -486,6 +572,15 @@ func isVideoToken(token string) bool {
 	}
 }
 
+func isImageToken(token string) bool {
+	switch strings.ToLower(strings.TrimSpace(token)) {
+	case "image", "images", "image-generation", "image_generation", "text-to-image", "image-to-image", "t2i", "i2i":
+		return true
+	default:
+		return false
+	}
+}
+
 func isLikelyVideoModel(id string) bool {
 	value := strings.ToLower(id)
 	keywords := []string{
@@ -520,9 +615,13 @@ func isLikelyNonVideoModel(id string) bool {
 }
 
 func requestModelsWithRetry(baseURL, apiKey string, timeout time.Duration, retries int) (*http.Response, string) {
+	return requestModelsPathWithRetry(baseURL, apiKey, "/models", timeout, retries)
+}
+
+func requestModelsPathWithRetry(baseURL, apiKey, path string, timeout time.Duration, retries int) (*http.Response, string) {
 	var lastErr string
 	for attempt := 0; attempt <= retries; attempt++ {
-		resp, errMsg := requestModels(baseURL, apiKey, timeout)
+		resp, errMsg := requestModelsPath(baseURL, apiKey, path, timeout)
 		if errMsg == "" {
 			return resp, ""
 		}
@@ -535,8 +634,13 @@ func requestModelsWithRetry(baseURL, apiKey string, timeout time.Duration, retri
 }
 
 func requestModels(baseURL, apiKey string, timeout time.Duration) (*http.Response, string) {
+	return requestModelsPath(baseURL, apiKey, "/models", timeout)
+}
+
+func requestModelsPath(baseURL, apiKey, path string, timeout time.Duration) (*http.Response, string) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	apiKey = strings.TrimSpace(apiKey)
+	path = strings.TrimSpace(path)
 
 	if baseURL == "" {
 		return nil, "Base URL is empty"
@@ -544,8 +648,14 @@ func requestModels(baseURL, apiKey string, timeout time.Duration) (*http.Respons
 	if apiKey == "" {
 		return nil, "API Key is empty"
 	}
+	if path == "" {
+		path = "/models"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
 
-	modelsURL := baseURL + "/models"
+	modelsURL := baseURL + path
 	req, err := http.NewRequest(http.MethodGet, modelsURL, nil)
 	if err != nil {
 		return nil, fmt.Sprintf("Invalid request: %v", err)
@@ -579,13 +689,30 @@ func encodeConnectionResult(success bool, errMsg string) string {
 	return string(data)
 }
 
-func encodeModelsResult(success bool, models []string, errMsg, debug string) string {
+func encodeModelsResult(success bool, videoModels, imageModels []string, errMsg, debug string) string {
+	models := append([]string{}, videoModels...)
+	seen := make(map[string]bool, len(models)+len(imageModels))
+	for _, model := range models {
+		seen[model] = true
+	}
+	for _, model := range imageModels {
+		if !seen[model] {
+			models = append(models, model)
+			seen[model] = true
+		}
+	}
 	if models == nil {
 		models = []string{}
 	}
-	data, err := json.Marshal(modelsResult{Success: success, Models: models, Error: errMsg, Debug: debug})
+	if videoModels == nil {
+		videoModels = []string{}
+	}
+	if imageModels == nil {
+		imageModels = []string{}
+	}
+	data, err := json.Marshal(modelsResult{Success: success, Models: models, VideoModels: videoModels, ImageModels: imageModels, Error: errMsg, Debug: debug})
 	if err != nil {
-		return `{"success":false,"models":[],"error":"Failed to encode models result"}`
+		return `{"success":false,"models":[],"video_models":[],"image_models":[],"error":"Failed to encode models result"}`
 	}
 	return string(data)
 }

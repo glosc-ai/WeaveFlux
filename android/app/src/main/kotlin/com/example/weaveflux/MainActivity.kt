@@ -73,6 +73,14 @@ class MainActivity : FlutterActivity() {
             if (models != null) {
                 result["models"] = List(models.length()) { index -> models.optString(index) }
             }
+            val videoModels = payload.optJSONArray("video_models")
+            if (videoModels != null) {
+                result["video_models"] = List(videoModels.length()) { index -> videoModels.optString(index) }
+            }
+            val imageModels = payload.optJSONArray("image_models")
+            if (imageModels != null) {
+                result["image_models"] = List(imageModels.length()) { index -> imageModels.optString(index) }
+            }
             result
         } catch (error: Throwable) {
             mapOf(

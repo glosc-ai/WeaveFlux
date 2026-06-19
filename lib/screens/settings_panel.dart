@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../services/go_core_bridge.dart';
+import '../services/model_catalog.dart';
 import '../theme/app_theme.dart';
 import 'create_workspace.dart';
 
@@ -16,9 +17,8 @@ class SettingsPanel extends StatefulWidget {
 }
 
 class _SettingsPanelState extends State<SettingsPanel> {
-  static const _baseUrlKey = 'wf_base_url';
-  static const _apiKeyKey = 'wf_api_key';
-  static const _modelKey = 'wf_selected_model';
+  static const _baseUrlKey = ModelCatalog.baseUrlKey;
+  static const _apiKeyKey = ModelCatalog.apiKeyKey;
 
   final _storage = const FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
@@ -27,8 +27,10 @@ class _SettingsPanelState extends State<SettingsPanel> {
       TextEditingController(text: 'https://one.gloscai.com/v1');
   final _apiKeyController = TextEditingController();
 
-  List<String> _models = <String>[];
-  String? _selectedModel;
+  List<String> _videoModels = <String>[];
+  List<String> _imageModels = <String>[];
+  String? _selectedVideoModel;
+  String? _selectedImageModel;
   String? _lastFetchedCredentialKey;
   bool _keyVisible = false;
   bool _saving = false;
@@ -41,6 +43,10 @@ class _SettingsPanelState extends State<SettingsPanel> {
   @override
   void initState() {
     super.initState();
+    ModelCatalog.instance.videoModels.addListener(_syncModelCatalog);
+    ModelCatalog.instance.imageModels.addListener(_syncModelCatalog);
+    ModelCatalog.instance.selectedVideoModel.addListener(_syncModelCatalog);
+    ModelCatalog.instance.selectedImageModel.addListener(_syncModelCatalog);
     _loadSettings();
   }
 
@@ -48,35 +54,60 @@ class _SettingsPanelState extends State<SettingsPanel> {
   void dispose() {
     _baseUrlController.dispose();
     _apiKeyController.dispose();
+    ModelCatalog.instance.videoModels.removeListener(_syncModelCatalog);
+    ModelCatalog.instance.imageModels.removeListener(_syncModelCatalog);
+    ModelCatalog.instance.selectedVideoModel.removeListener(_syncModelCatalog);
+    ModelCatalog.instance.selectedImageModel.removeListener(_syncModelCatalog);
     super.dispose();
+  }
+
+  void _syncModelCatalog() {
+    if (!mounted) return;
+    setState(() {
+      _videoModels = ModelCatalog.instance.videoModels.value;
+      _imageModels = ModelCatalog.instance.imageModels.value;
+      _selectedVideoModel = ModelCatalog.instance.selectedVideoModel.value;
+      _selectedImageModel = ModelCatalog.instance.selectedImageModel.value;
+    });
   }
 
   Future<void> _loadSettings() async {
     final baseUrl = await _storage.read(key: _baseUrlKey);
     final apiKey = await _storage.read(key: _apiKeyKey);
-    final model = await _storage.read(key: _modelKey);
+    await ModelCatalog.instance.load();
     if (!mounted) return;
 
     setState(() {
+      _videoModels = ModelCatalog.instance.videoModels.value;
+      _imageModels = ModelCatalog.instance.imageModels.value;
       if (baseUrl != null && baseUrl.isNotEmpty) {
         _baseUrlController.text = baseUrl;
       }
       if (apiKey != null) {
         _apiKeyController.text = apiKey;
       }
-      if (model != null && model.isNotEmpty) {
-        if (!_models.contains(model)) {
-          _models = [model, ..._models];
-        }
-        _selectedModel = model;
+      if ((baseUrl ?? '').isNotEmpty && (apiKey ?? '').isNotEmpty) {
+        _lastFetchedCredentialKey = _CredentialInput(
+          baseUrl:
+              _baseUrlController.text.trim().replaceAll(RegExp(r'/+$'), ''),
+          apiKey: _apiKeyController.text.trim(),
+        ).cacheKey;
       }
+      _selectedVideoModel = ModelCatalog.instance.selectedVideoModel.value;
+      _selectedImageModel = ModelCatalog.instance.selectedImageModel.value;
     });
   }
 
-  Future<void> _selectModel(String? model) async {
+  Future<void> _selectVideoModel(String? model) async {
     if (model == null) return;
-    setState(() => _selectedModel = model);
-    await _storage.write(key: _modelKey, value: model);
+    setState(() => _selectedVideoModel = model);
+    await ModelCatalog.instance.setSelectedVideoModel(model);
+  }
+
+  Future<void> _selectImageModel(String? model) async {
+    if (model == null) return;
+    setState(() => _selectedImageModel = model);
+    await ModelCatalog.instance.setSelectedImageModel(model);
   }
 
   Future<void> _fetchModels() async {
@@ -89,30 +120,42 @@ class _SettingsPanelState extends State<SettingsPanel> {
     });
 
     try {
-      final modelsResult = await GoCoreBridge.fetchModels(
+      final modelsResult = await ModelCatalog.instance.refresh(
         baseUrl: values.baseUrl,
         apiKey: values.apiKey,
       );
 
       if (!mounted) return;
       if (modelsResult.success) {
-        final models = modelsResult.models;
-        final selected = models.contains(_selectedModel)
-            ? _selectedModel
-            : models.isNotEmpty
-                ? models.first
+        final videoModels = modelsResult.videoModels;
+        final imageModels = modelsResult.imageModels;
+        final models = <String>{...videoModels, ...imageModels}.toList();
+        final selectedVideo = videoModels.contains(_selectedVideoModel)
+            ? _selectedVideoModel
+            : videoModels.isNotEmpty
+                ? videoModels.first
+                : null;
+        final selectedImage = imageModels.contains(_selectedImageModel)
+            ? _selectedImageModel
+            : imageModels.isNotEmpty
+                ? imageModels.first
                 : null;
         setState(() {
-          _models = models;
-          _selectedModel = selected;
+          _videoModels = videoModels;
+          _imageModels = imageModels;
+          _selectedVideoModel = selectedVideo;
+          _selectedImageModel = selectedImage;
           _lastFetchedCredentialKey = values.cacheKey;
           _result = _PanelResult.success(
             '模型获取成功',
             '已筛选出 ${models.length} 个候选视频模型，请选择后测试连接。',
           );
         });
-        if (selected != null) {
-          await _storage.write(key: _modelKey, value: selected);
+        if (selectedVideo != null) {
+          await ModelCatalog.instance.setSelectedVideoModel(selectedVideo);
+        }
+        if (selectedImage != null) {
+          await ModelCatalog.instance.setSelectedImageModel(selectedImage);
         }
       } else {
         setState(() {
@@ -152,8 +195,8 @@ class _SettingsPanelState extends State<SettingsPanel> {
       await _persistSettings(values);
       if (!mounted) return;
       setState(() {
-        _result = _PanelResult.success(
-            '配置已加密保存', 'Base URL、API Key 和默认模型已保存至本地。');
+        _result =
+            _PanelResult.success('配置已加密保存', 'Base URL、API Key 和默认模型已保存至本地。');
       });
     } catch (error) {
       if (!mounted) return;
@@ -237,7 +280,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
           () => _result = _PanelResult.error('请输入 API Key', 'API 密钥不能为空。'));
       return null;
     }
-    if (requireModel && _selectedModel == null) {
+    if (requireModel && _selectedVideoModel == null) {
       setState(() => _result = _PanelResult.error('请选择模型', '请先获取可用模型并选择一个模型。'));
       return null;
     }
@@ -255,9 +298,13 @@ class _SettingsPanelState extends State<SettingsPanel> {
   Future<void> _persistSettings(_CredentialInput values) async {
     await _storage.write(key: _baseUrlKey, value: values.baseUrl);
     await _storage.write(key: _apiKeyKey, value: values.apiKey);
-    final model = _selectedModel;
-    if (model != null) {
-      await _storage.write(key: _modelKey, value: model);
+    final videoModel = _selectedVideoModel;
+    if (videoModel != null) {
+      await ModelCatalog.instance.setSelectedVideoModel(videoModel);
+    }
+    final imageModel = _selectedImageModel;
+    if (imageModel != null) {
+      await ModelCatalog.instance.setSelectedImageModel(imageModel);
     }
   }
 
@@ -349,9 +396,17 @@ class _SettingsPanelState extends State<SettingsPanel> {
           _SettingsCard(
             children: [
               _DropdownRow(
-                selectedModel: _selectedModel,
-                models: _models,
-                onChanged: busy ? null : _selectModel,
+                label: '默认视频模型',
+                selectedModel: _selectedVideoModel,
+                models: _videoModels,
+                onChanged: busy ? null : _selectVideoModel,
+              ),
+              const Divider(height: 1),
+              _DropdownRow(
+                label: '默认图片模型',
+                selectedModel: _selectedImageModel,
+                models: _imageModels,
+                onChanged: busy ? null : _selectImageModel,
               ),
             ],
           ),
@@ -583,11 +638,13 @@ class _CredentialRow extends StatelessWidget {
 
 class _DropdownRow extends StatelessWidget {
   const _DropdownRow({
+    required this.label,
     required this.selectedModel,
     required this.models,
     required this.onChanged,
   });
 
+  final String label;
   final String? selectedModel;
   final List<String> models;
   final ValueChanged<String?>? onChanged;
@@ -612,9 +669,9 @@ class _DropdownRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  '默认生成模型',
-                  style: TextStyle(
+                Text(
+                  label,
+                  style: const TextStyle(
                     color: AppColors.muted,
                     fontSize: 11,
                     fontWeight: FontWeight.w600,

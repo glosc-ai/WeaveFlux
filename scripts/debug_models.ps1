@@ -123,6 +123,7 @@ $headers = @{
 
 Invoke-Models -Label "Plain /models" -Url "$BaseUrl/models" -Headers $headers
 Invoke-Models -Label "/models?categories=video" -Url "$BaseUrl/models?categories=video" -Headers $headers
+Invoke-Models -Label "/models?categories=image" -Url "$BaseUrl/models?categories=image" -Headers $headers
 
 Write-Host ""
 Write-Host "Done. API Key was read only in-memory and was not written to disk."

@@ -5,26 +5,34 @@ import (
 	"testing"
 )
 
-func TestCollectVideoModelIDsExcludesTextModels(t *testing.T) {
+func TestCollectMediaModelIDsUsesMediaCategoryTags(t *testing.T) {
 	items := []modelItem{
 		{ID: "GPT5.5", Categories: rawJSON(t, `["video"]`)},
 		{ID: "Claude-ops-4-8", Categories: rawJSON(t, `["video"]`)},
 		{ID: "Agnes/agnes-1.5-flash", Categories: rawJSON(t, `["chat"]`)},
+		{ID: "flux-image", Categories: rawJSON(t, `["image"]`)},
 		{ID: "kling-v2", Categories: rawJSON(t, `["video"]`)},
 		{ID: "wanx2.1-t2v-plus", Categories: rawJSON(t, `[]`)},
 		{ID: "xai/grok-imagine-video", Categories: rawJSON(t, `["video"]`)},
 	}
 
-	got := collectVideoModelIDs(items).Models
-	want := []string{"kling-v2", "wanx2.1-t2v-plus", "xai/grok-imagine-video"}
+	collection := collectMediaModelIDs(items)
+	gotVideo := collection.VideoModels
+	wantVideo := []string{"GPT5.5", "Claude-ops-4-8", "kling-v2", "xai/grok-imagine-video"}
 
-	if len(got) != len(want) {
-		t.Fatalf("got %v, want %v", got, want)
+	if len(gotVideo) != len(wantVideo) {
+		t.Fatalf("got %v, want %v", gotVideo, wantVideo)
 	}
-	for index := range want {
-		if got[index] != want[index] {
-			t.Fatalf("got %v, want %v", got, want)
+	for index := range wantVideo {
+		if gotVideo[index] != wantVideo[index] {
+			t.Fatalf("got %v, want %v", gotVideo, wantVideo)
 		}
+	}
+
+	gotImage := collection.ImageModels
+	wantImage := []string{"flux-image"}
+	if len(gotImage) != len(wantImage) || gotImage[0] != wantImage[0] {
+		t.Fatalf("got %v, want %v", gotImage, wantImage)
 	}
 }
 
@@ -44,6 +52,25 @@ func TestHasVideoCategoryParsesStructuredCategories(t *testing.T) {
 
 	if hasVideoCategory(rawJSON(t, `["chat","vision"]`)) {
 		t.Fatal("did not expect video category for chat/vision")
+	}
+}
+
+func TestHasImageCategoryParsesStructuredCategories(t *testing.T) {
+	cases := []string{
+		`["image"]`,
+		`["text-to-image"]`,
+		`{"image":true}`,
+		`{"capabilities":["image-to-image"]}`,
+	}
+
+	for _, input := range cases {
+		if !hasImageCategory(rawJSON(t, input)) {
+			t.Fatalf("expected image category for %s", input)
+		}
+	}
+
+	if hasImageCategory(rawJSON(t, `["chat","video"]`)) {
+		t.Fatal("did not expect image category for chat/video")
 	}
 }
 

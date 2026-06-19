@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
-import '../theme/app_theme.dart';
+import '../services/model_catalog.dart';
 import '../services/task_store.dart';
+import '../theme/app_theme.dart';
 import 'create_workspace.dart';
 import 'private_gallery.dart';
 import 'settings_panel.dart';
@@ -36,6 +37,7 @@ class _AppShellState extends State<AppShell> {
   void initState() {
     super.initState();
     TaskStore.instance.load();
+    ModelCatalog.instance.refreshFromSavedCredentials();
   }
 
   @override

@@ -1,16 +1,22 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../models/video_task.dart';
 import '../services/go_core_bridge.dart';
+import '../services/model_catalog.dart';
 import '../services/task_store.dart';
 import '../theme/app_theme.dart';
 
-enum CreationMode { textToVideo, imageToVideo }
+enum CreationTarget { video, image }
+
+enum VideoCreationMode { promptOnly, firstFrame, firstLastFrame, extendClip }
+
+enum LocalAssetSlot { firstFrame, lastFrame, clip, audio }
 
 class CreateWorkspace extends StatefulWidget {
   const CreateWorkspace({this.onOpenSettings, this.onOpenTasks, super.key});
@@ -25,54 +31,175 @@ class CreateWorkspace extends StatefulWidget {
 }
 
 class _CreateWorkspaceState extends State<CreateWorkspace> {
-  static const _baseUrlKey = 'wf_base_url';
-  static const _apiKeyKey = 'wf_api_key';
-  static const _modelKey = 'wf_selected_model';
+  static const _baseUrlKey = ModelCatalog.baseUrlKey;
+  static const _apiKeyKey = ModelCatalog.apiKeyKey;
 
   final _storage = const FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
   final _imagePicker = ImagePicker();
   final _promptController = TextEditingController();
+  final _negativePromptController = TextEditingController();
   final _modelController = TextEditingController(text: 't2v-default-model');
-  CreationMode _mode = CreationMode.textToVideo;
+  final _imageModelController =
+      TextEditingController(text: 'image-default-model');
+  final _firstFrameUrlController = TextEditingController();
+  final _lastFrameUrlController = TextEditingController();
+  final _clipUrlController = TextEditingController();
+  final _audioUrlController = TextEditingController();
+  final _seedController = TextEditingController();
+  final _templateController = TextEditingController();
+
+  CreationTarget _target = CreationTarget.video;
+  VideoCreationMode _videoMode = VideoCreationMode.promptOnly;
   bool _advancedOpen = true;
-  String _ratio = '16:9';
+  String _size = '1024x576';
+  String _imageSize = '1024x1024';
+  String _imageQuality = 'standard';
+  int _imageCount = 1;
+  double _duration = 5;
   double _motion = 0.5;
+  bool _promptExtension = true;
+  bool _watermark = false;
   bool _sheetOpen = false;
   bool _submitting = false;
-  XFile? _selectedImage;
+
+  XFile? _firstFrameFile;
+  XFile? _lastFrameFile;
+  XFile? _clipFile;
+  PlatformFile? _audioFile;
+  XFile? _imageReferenceFile;
+
+  List<String> _videoModels = <String>[];
+  List<String> _imageModels = <String>[];
+  String? _selectedVideoModel;
+  String? _selectedImageModel;
 
   @override
   void initState() {
     super.initState();
     _loadDefaultModel();
+    ModelCatalog.instance.videoModels.addListener(_syncModelsFromCatalog);
+    ModelCatalog.instance.imageModels.addListener(_syncModelsFromCatalog);
+    ModelCatalog.instance.selectedVideoModel
+        .addListener(_syncModelsFromCatalog);
+    ModelCatalog.instance.selectedImageModel
+        .addListener(_syncModelsFromCatalog);
   }
 
   @override
   void dispose() {
     _promptController.dispose();
+    _negativePromptController.dispose();
     _modelController.dispose();
+    _imageModelController.dispose();
+    _firstFrameUrlController.dispose();
+    _lastFrameUrlController.dispose();
+    _clipUrlController.dispose();
+    _audioUrlController.dispose();
+    _seedController.dispose();
+    _templateController.dispose();
+    ModelCatalog.instance.videoModels.removeListener(_syncModelsFromCatalog);
+    ModelCatalog.instance.imageModels.removeListener(_syncModelsFromCatalog);
+    ModelCatalog.instance.selectedVideoModel
+        .removeListener(_syncModelsFromCatalog);
+    ModelCatalog.instance.selectedImageModel
+        .removeListener(_syncModelsFromCatalog);
     super.dispose();
   }
 
   Future<void> _loadDefaultModel() async {
-    final model = await _storage.read(key: _modelKey);
-    if (!mounted || model == null || model.isEmpty) return;
-    setState(() => _modelController.text = model);
+    await ModelCatalog.instance.load();
+    if (!mounted) return;
+    _syncModelsFromCatalog();
   }
 
-  Future<void> _pickImage() async {
+  void _syncModelsFromCatalog() {
+    if (!mounted) return;
+    final videoModels = ModelCatalog.instance.videoModels.value;
+    final imageModels = ModelCatalog.instance.imageModels.value;
+    final videoModel = ModelCatalog.instance.selectedVideoModel.value;
+    final imageModel = ModelCatalog.instance.selectedImageModel.value;
+    setState(() {
+      _videoModels = videoModels;
+      _imageModels = imageModels;
+      _selectedVideoModel =
+          videoModel ?? (videoModels.isEmpty ? null : videoModels.first);
+      _selectedImageModel =
+          imageModel ?? (imageModels.isEmpty ? null : imageModels.first);
+      if (_selectedVideoModel != null) {
+        _modelController.text = _selectedVideoModel!;
+      }
+      if (_selectedImageModel != null) {
+        _imageModelController.text = _selectedImageModel!;
+      }
+    });
+  }
+
+  Future<void> _pickImage(LocalAssetSlot slot) async {
     final image = await _imagePicker.pickImage(
       source: ImageSource.gallery,
-      maxWidth: 1600,
+      maxWidth: 1800,
       imageQuality: 88,
     );
     if (image == null || !mounted) return;
-    setState(() => _selectedImage = image);
+    setState(() {
+      switch (slot) {
+        case LocalAssetSlot.firstFrame:
+          _firstFrameFile = image;
+        case LocalAssetSlot.lastFrame:
+          _lastFrameFile = image;
+        case LocalAssetSlot.clip:
+          _clipFile = image;
+        case LocalAssetSlot.audio:
+          break;
+      }
+    });
   }
 
-  Future<void> _startWeaving() async {
+  Future<void> _pickImageReference() async {
+    final image = await _imagePicker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1800,
+      imageQuality: 88,
+    );
+    if (image == null || !mounted) return;
+    setState(() => _imageReferenceFile = image);
+  }
+
+  Future<void> _selectVideoModel(String? model) async {
+    if (model == null) return;
+    setState(() {
+      _selectedVideoModel = model;
+      _modelController.text = model;
+    });
+    await ModelCatalog.instance.setSelectedVideoModel(model);
+  }
+
+  Future<void> _selectImageModel(String? model) async {
+    if (model == null) return;
+    setState(() {
+      _selectedImageModel = model;
+      _imageModelController.text = model;
+    });
+    await ModelCatalog.instance.setSelectedImageModel(model);
+  }
+
+  Future<void> _pickAudio() async {
+    final result = await FilePicker.platform.pickFiles(type: FileType.audio);
+    if (result == null || result.files.isEmpty || !mounted) return;
+    setState(() => _audioFile = result.files.single);
+  }
+
+  Future<void> _startCreation() async {
+    if (_target == CreationTarget.image) {
+      _showMessage('图片生成入口已就绪，后续接入图像生成端点后可直接派发。');
+      return;
+    }
+    await _startVideoCreation();
+  }
+
+  Future<void> _startVideoCreation() async {
     if (_submitting) return;
 
     final baseUrl = (await _storage.read(key: _baseUrlKey))?.trim() ?? '';
@@ -89,28 +216,35 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
       return;
     }
     if (model.isEmpty) {
-      _showMessage('请选择或输入模型');
+      _showMessage('请选择或输入视频模型');
       return;
     }
-    if (_mode == CreationMode.imageToVideo && _selectedImage == null) {
-      _showMessage('请先选择参考图片');
+    if (_needsFirstFrame && !_hasFirstFrame) {
+      _showMessage('请提供首帧图片 URL 或本地图片');
+      return;
+    }
+    if (_videoMode == VideoCreationMode.firstLastFrame && !_hasLastFrame) {
+      _showMessage('请提供尾帧图片 URL 或本地图片');
+      return;
+    }
+    if (_videoMode == VideoCreationMode.extendClip && !_hasClip) {
+      _showMessage('请提供需要继续生成的视频片段 URL 或本地文件');
       return;
     }
 
     setState(() => _submitting = true);
 
     try {
-      final imageBase64 = _mode == CreationMode.imageToVideo
-          ? base64Encode(await File(_selectedImage!.path).readAsBytes())
-          : '';
-      final size = _sizeForRatio(_ratio);
+      final imageBase64 = _firstFrameFile == null
+          ? ''
+          : base64Encode(await File(_firstFrameFile!.path).readAsBytes());
 
       final result = await GoCoreBridge.dispatchVideoTask(
         baseUrl: baseUrl,
         apiKey: apiKey,
         model: model,
-        prompt: prompt,
-        size: size,
+        prompt: _buildDispatchPrompt(prompt),
+        size: _size,
         motionScale: _motion,
         imageBase64: imageBase64,
       );
@@ -126,16 +260,16 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
           localId: DateTime.now().microsecondsSinceEpoch.toString(),
           remoteTaskId: result.taskId,
           status: VideoTaskStatus.processing,
-          mode: _mode == CreationMode.textToVideo
+          mode: _videoMode == VideoCreationMode.promptOnly
               ? VideoTaskMode.textToVideo
               : VideoTaskMode.imageToVideo,
           prompt: prompt,
           model: model,
-          aspectRatio: _ratio,
-          size: size,
+          aspectRatio: _aspectRatioForSize(_size),
+          size: _size,
           motionScale: _motion,
           createdAt: DateTime.now(),
-          imagePath: _selectedImage?.path ?? '',
+          imagePath: _firstFrameFile?.path ?? '',
         ),
       );
 
@@ -151,12 +285,60 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
     }
   }
 
-  String _sizeForRatio(String ratio) {
-    return switch (ratio) {
-      '9:16' => '576x1024',
-      '1:1' => '768x768',
-      _ => '1024x576',
-    };
+  String _buildDispatchPrompt(String prompt) {
+    final parts = <String>[
+      prompt,
+      '',
+      'Generation mode: ${_videoMode.label}',
+      'Duration: ${_duration.round()}s',
+      'Prompt extension: ${_promptExtension ? 'on' : 'off'}',
+      'Watermark: ${_watermark ? 'on' : 'off'}',
+    ];
+    if (_negativePromptController.text.trim().isNotEmpty) {
+      parts.add('Negative prompt: ${_negativePromptController.text.trim()}');
+    }
+    if (_seedController.text.trim().isNotEmpty) {
+      parts.add('Seed: ${_seedController.text.trim()}');
+    }
+    if (_templateController.text.trim().isNotEmpty) {
+      parts.add('Template: ${_templateController.text.trim()}');
+    }
+    if (_firstFrameUrlController.text.trim().isNotEmpty) {
+      parts.add('First frame URL: ${_firstFrameUrlController.text.trim()}');
+    }
+    if (_lastFrameUrlController.text.trim().isNotEmpty) {
+      parts.add('Last frame URL: ${_lastFrameUrlController.text.trim()}');
+    }
+    if (_clipUrlController.text.trim().isNotEmpty) {
+      parts.add('Extend clip URL: ${_clipUrlController.text.trim()}');
+    }
+    if (_audioUrlController.text.trim().isNotEmpty) {
+      parts.add('Audio URL: ${_audioUrlController.text.trim()}');
+    }
+    if (_audioFile?.path != null) {
+      parts.add('Local audio file: ${_audioFile!.name}');
+    }
+    return parts.join('\n');
+  }
+
+  bool get _needsFirstFrame =>
+      _videoMode == VideoCreationMode.firstFrame ||
+      _videoMode == VideoCreationMode.firstLastFrame;
+
+  bool get _hasFirstFrame =>
+      _firstFrameFile != null ||
+      _firstFrameUrlController.text.trim().isNotEmpty;
+
+  bool get _hasLastFrame =>
+      _lastFrameFile != null || _lastFrameUrlController.text.trim().isNotEmpty;
+
+  bool get _hasClip =>
+      _clipFile != null || _clipUrlController.text.trim().isNotEmpty;
+
+  String _aspectRatioForSize(String size) {
+    if (size.contains('1080x1920') || size.contains('720x1280')) return '9:16';
+    if (size.contains('1024x1024') || size.contains('768x768')) return '1:1';
+    return '16:9';
   }
 
   void _showMessage(String message) {
@@ -172,8 +354,12 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
       bottomAction: Padding(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
         child: _GradientButton(
-          label: _submitting ? '提交中...' : '开始织影',
-          onTap: _submitting ? null : _startWeaving,
+          label: _submitting
+              ? '提交中...'
+              : _target == CreationTarget.video
+                  ? '开始生成视频'
+                  : '生成图片',
+          onTap: _submitting ? null : _startCreation,
         ),
       ),
       overlays: [
@@ -189,36 +375,74 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
       child: ListView(
         padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
         children: [
-          _SegmentedMode(
-            mode: _mode,
-            onChanged: (mode) => setState(() => _mode = mode),
+          _TargetSegmented(
+            target: _target,
+            onChanged: (target) => setState(() => _target = target),
           ),
-          const SizedBox(height: 20),
-          _PromptCard(
-            mode: _mode,
-            controller: _promptController,
-            selectedImagePath: _selectedImage?.path,
-            onChanged: (_) => setState(() {}),
-            onPickImage: _pickImage,
-          ),
-          const SizedBox(height: 12),
-          _AdvancedToggle(
-            open: _advancedOpen,
-            onTap: () => setState(() => _advancedOpen = !_advancedOpen),
-          ),
-          AnimatedCrossFade(
-            firstChild: const SizedBox.shrink(),
-            secondChild: _AdvancedPanel(
-              modelController: _modelController,
-              ratio: _ratio,
-              motion: _motion,
-              onRatioChanged: (value) => setState(() => _ratio = value),
-              onMotionChanged: (value) => setState(() => _motion = value),
-            ),
-            crossFadeState: _advancedOpen
-                ? CrossFadeState.showSecond
-                : CrossFadeState.showFirst,
-            duration: const Duration(milliseconds: 250),
+          const SizedBox(height: 14),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 220),
+            child: _target == CreationTarget.video
+                ? _VideoWorkspace(
+                    key: const ValueKey('video-workspace'),
+                    mode: _videoMode,
+                    promptController: _promptController,
+                    selectedModel: _selectedVideoModel,
+                    models: _videoModels,
+                    negativePromptController: _negativePromptController,
+                    seedController: _seedController,
+                    templateController: _templateController,
+                    firstFrameUrlController: _firstFrameUrlController,
+                    lastFrameUrlController: _lastFrameUrlController,
+                    clipUrlController: _clipUrlController,
+                    audioUrlController: _audioUrlController,
+                    firstFrameFile: _firstFrameFile,
+                    lastFrameFile: _lastFrameFile,
+                    clipFile: _clipFile,
+                    audioFile: _audioFile,
+                    advancedOpen: _advancedOpen,
+                    size: _size,
+                    duration: _duration,
+                    motion: _motion,
+                    promptExtension: _promptExtension,
+                    watermark: _watermark,
+                    onModeChanged: (mode) => setState(() => _videoMode = mode),
+                    onModelChanged: _selectVideoModel,
+                    onPromptChanged: (_) => setState(() {}),
+                    onPickImage: _pickImage,
+                    onPickAudio: _pickAudio,
+                    onAdvancedToggle: () =>
+                        setState(() => _advancedOpen = !_advancedOpen),
+                    onSizeChanged: (value) => setState(() => _size = value),
+                    onDurationChanged: (value) =>
+                        setState(() => _duration = value),
+                    onMotionChanged: (value) => setState(() => _motion = value),
+                    onPromptExtensionChanged: (value) =>
+                        setState(() => _promptExtension = value),
+                    onWatermarkChanged: (value) =>
+                        setState(() => _watermark = value),
+                  )
+                : _ImageWorkspace(
+                    key: const ValueKey('image-workspace'),
+                    promptController: _promptController,
+                    selectedModel: _selectedImageModel,
+                    models: _imageModels,
+                    negativePromptController: _negativePromptController,
+                    seedController: _seedController,
+                    referenceFile: _imageReferenceFile,
+                    size: _imageSize,
+                    quality: _imageQuality,
+                    count: _imageCount,
+                    onModelChanged: _selectImageModel,
+                    onPromptChanged: (_) => setState(() {}),
+                    onSizeChanged: (value) =>
+                        setState(() => _imageSize = value),
+                    onQualityChanged: (value) =>
+                        setState(() => _imageQuality = value),
+                    onCountChanged: (value) =>
+                        setState(() => _imageCount = value),
+                    onPickReference: _pickImageReference,
+                  ),
           ),
         ],
       ),
@@ -259,11 +483,1019 @@ class WeaveScaffold extends StatelessWidget {
   }
 }
 
-class _SegmentedMode extends StatelessWidget {
-  const _SegmentedMode({required this.mode, required this.onChanged});
+class _TargetSegmented extends StatelessWidget {
+  const _TargetSegmented({required this.target, required this.onChanged});
 
-  final CreationMode mode;
-  final ValueChanged<CreationMode> onChanged;
+  final CreationTarget target;
+  final ValueChanged<CreationTarget> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return _PillSegmented<CreationTarget>(
+      value: target,
+      values: const [CreationTarget.video, CreationTarget.image],
+      labelOf: (value) => value == CreationTarget.video ? '视频生成' : '图片生成',
+      onChanged: onChanged,
+    );
+  }
+}
+
+class _VideoWorkspace extends StatelessWidget {
+  const _VideoWorkspace({
+    required this.mode,
+    required this.promptController,
+    required this.selectedModel,
+    required this.models,
+    required this.negativePromptController,
+    required this.seedController,
+    required this.templateController,
+    required this.firstFrameUrlController,
+    required this.lastFrameUrlController,
+    required this.clipUrlController,
+    required this.audioUrlController,
+    required this.firstFrameFile,
+    required this.lastFrameFile,
+    required this.clipFile,
+    required this.audioFile,
+    required this.advancedOpen,
+    required this.size,
+    required this.duration,
+    required this.motion,
+    required this.promptExtension,
+    required this.watermark,
+    required this.onModeChanged,
+    required this.onModelChanged,
+    required this.onPromptChanged,
+    required this.onPickImage,
+    required this.onPickAudio,
+    required this.onAdvancedToggle,
+    required this.onSizeChanged,
+    required this.onDurationChanged,
+    required this.onMotionChanged,
+    required this.onPromptExtensionChanged,
+    required this.onWatermarkChanged,
+    super.key,
+  });
+
+  final VideoCreationMode mode;
+  final TextEditingController promptController;
+  final String? selectedModel;
+  final List<String> models;
+  final TextEditingController negativePromptController;
+  final TextEditingController seedController;
+  final TextEditingController templateController;
+  final TextEditingController firstFrameUrlController;
+  final TextEditingController lastFrameUrlController;
+  final TextEditingController clipUrlController;
+  final TextEditingController audioUrlController;
+  final XFile? firstFrameFile;
+  final XFile? lastFrameFile;
+  final XFile? clipFile;
+  final PlatformFile? audioFile;
+  final bool advancedOpen;
+  final String size;
+  final double duration;
+  final double motion;
+  final bool promptExtension;
+  final bool watermark;
+  final ValueChanged<VideoCreationMode> onModeChanged;
+  final ValueChanged<String?> onModelChanged;
+  final ValueChanged<String> onPromptChanged;
+  final ValueChanged<LocalAssetSlot> onPickImage;
+  final VoidCallback onPickAudio;
+  final VoidCallback onAdvancedToggle;
+  final ValueChanged<String> onSizeChanged;
+  final ValueChanged<double> onDurationChanged;
+  final ValueChanged<double> onMotionChanged;
+  final ValueChanged<bool> onPromptExtensionChanged;
+  final ValueChanged<bool> onWatermarkChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      key: key,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _ModeGrid(mode: mode, onChanged: onModeChanged),
+        const SizedBox(height: 12),
+        _PromptCard(
+          title: '视频提示词',
+          hintText: '描述镜头、主体、动作、光线、风格和节奏...',
+          controller: promptController,
+          maxLines: 6,
+          onChanged: onPromptChanged,
+        ),
+        const SizedBox(height: 12),
+        if (mode != VideoCreationMode.promptOnly) ...[
+          _ReferencePanel(
+            mode: mode,
+            firstFrameUrlController: firstFrameUrlController,
+            lastFrameUrlController: lastFrameUrlController,
+            clipUrlController: clipUrlController,
+            firstFrameFile: firstFrameFile,
+            lastFrameFile: lastFrameFile,
+            clipFile: clipFile,
+            onPickImage: onPickImage,
+          ),
+          const SizedBox(height: 12),
+        ],
+        _AudioPanel(
+          controller: audioUrlController,
+          audioFile: audioFile,
+          onPickAudio: onPickAudio,
+        ),
+        const SizedBox(height: 12),
+        _AdvancedToggle(open: advancedOpen, onTap: onAdvancedToggle),
+        AnimatedCrossFade(
+          firstChild: const SizedBox.shrink(),
+          secondChild: _VideoAdvancedPanel(
+            selectedModel: selectedModel,
+            models: models,
+            negativePromptController: negativePromptController,
+            seedController: seedController,
+            templateController: templateController,
+            size: size,
+            duration: duration,
+            motion: motion,
+            promptExtension: promptExtension,
+            watermark: watermark,
+            onSizeChanged: onSizeChanged,
+            onModelChanged: onModelChanged,
+            onDurationChanged: onDurationChanged,
+            onMotionChanged: onMotionChanged,
+            onPromptExtensionChanged: onPromptExtensionChanged,
+            onWatermarkChanged: onWatermarkChanged,
+          ),
+          crossFadeState: advancedOpen
+              ? CrossFadeState.showSecond
+              : CrossFadeState.showFirst,
+          duration: const Duration(milliseconds: 250),
+        ),
+      ],
+    );
+  }
+}
+
+class _ImageWorkspace extends StatelessWidget {
+  const _ImageWorkspace({
+    required this.promptController,
+    required this.selectedModel,
+    required this.models,
+    required this.negativePromptController,
+    required this.seedController,
+    required this.referenceFile,
+    required this.size,
+    required this.quality,
+    required this.count,
+    required this.onModelChanged,
+    required this.onPromptChanged,
+    required this.onSizeChanged,
+    required this.onQualityChanged,
+    required this.onCountChanged,
+    required this.onPickReference,
+    super.key,
+  });
+
+  final TextEditingController promptController;
+  final String? selectedModel;
+  final List<String> models;
+  final TextEditingController negativePromptController;
+  final TextEditingController seedController;
+  final XFile? referenceFile;
+  final String size;
+  final String quality;
+  final int count;
+  final ValueChanged<String?> onModelChanged;
+  final ValueChanged<String> onPromptChanged;
+  final ValueChanged<String> onSizeChanged;
+  final ValueChanged<String> onQualityChanged;
+  final ValueChanged<int> onCountChanged;
+  final VoidCallback onPickReference;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      key: key,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _PromptCard(
+          title: '图片提示词',
+          hintText: '描述要生成的首帧、角色、场景、构图和视觉风格...',
+          controller: promptController,
+          maxLines: 7,
+          onChanged: onPromptChanged,
+        ),
+        const SizedBox(height: 12),
+        _Panel(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const _FieldLabel('图片模型'),
+              _ModelDropdown(
+                selectedModel: selectedModel,
+                models: models,
+                onChanged: onModelChanged,
+              ),
+              const SizedBox(height: 16),
+              const _FieldLabel('图片尺寸'),
+              _ChoiceWrap(
+                value: size,
+                values: const ['1024x1024', '1024x1536', '1536x1024', '720P'],
+                onChanged: onSizeChanged,
+              ),
+              const SizedBox(height: 16),
+              _ReferenceFilePicker(
+                title: '参考图片',
+                filePath: referenceFile?.path,
+                onPick: onPickReference,
+              ),
+              const SizedBox(height: 16),
+              const _FieldLabel('质量'),
+              _ChoiceWrap(
+                value: quality,
+                values: const ['standard', 'hd'],
+                onChanged: onQualityChanged,
+              ),
+              const SizedBox(height: 16),
+              const _FieldLabel('图片数量'),
+              _CountStepper(value: count, onChanged: onCountChanged),
+              const SizedBox(height: 16),
+              const _FieldLabel('负面提示词'),
+              TextField(
+                controller: negativePromptController,
+                minLines: 2,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  hintText: '不希望出现的元素，模型支持时生效',
+                ),
+              ),
+              const SizedBox(height: 16),
+              const _FieldLabel('种子'),
+              TextField(
+                controller: seedController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  hintText: '可选，模型支持时生效',
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        const _ImageHint(),
+      ],
+    );
+  }
+}
+
+class _ModeGrid extends StatelessWidget {
+  const _ModeGrid({required this.mode, required this.onChanged});
+
+  final VideoCreationMode mode;
+  final ValueChanged<VideoCreationMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return GridView.count(
+      crossAxisCount: 2,
+      childAspectRatio: 2.25,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      mainAxisSpacing: 10,
+      crossAxisSpacing: 10,
+      children: VideoCreationMode.values.map((item) {
+        return _ModeCard(
+          mode: item,
+          selected: item == mode,
+          onTap: () => onChanged(item),
+        );
+      }).toList(),
+    );
+  }
+}
+
+class _ModeCard extends StatelessWidget {
+  const _ModeCard({
+    required this.mode,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final VideoCreationMode mode;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: AppRadii.cardRadius,
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: selected
+              ? AppColors.secondaryAccent.withValues(alpha: 0.12)
+              : AppColors.surface,
+          borderRadius: AppRadii.cardRadius,
+          border: Border.all(
+            color: selected ? AppColors.secondaryAccent : AppColors.border,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(mode.icon,
+                color: selected ? AppColors.secondaryAccent : AppColors.muted),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    mode.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    mode.description,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style:
+                        const TextStyle(color: AppColors.muted, fontSize: 10),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PromptCard extends StatelessWidget {
+  const _PromptCard({
+    required this.title,
+    required this.hintText,
+    required this.controller,
+    required this.maxLines,
+    required this.onChanged,
+  });
+
+  final String title;
+  final String hintText;
+  final TextEditingController controller;
+  final int maxLines;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final length = controller.text.length;
+
+    return _Panel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _FieldLabel(title),
+          TextField(
+            controller: controller,
+            onChanged: onChanged,
+            maxLength: 1200,
+            maxLines: maxLines,
+            decoration: InputDecoration(
+              counterText: '',
+              filled: false,
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              hintText: hintText,
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Text(
+              '$length / 1200',
+              style: TextStyle(
+                color: length > 1080 ? AppColors.danger : AppColors.muted,
+                fontSize: 11,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReferencePanel extends StatelessWidget {
+  const _ReferencePanel({
+    required this.mode,
+    required this.firstFrameUrlController,
+    required this.lastFrameUrlController,
+    required this.clipUrlController,
+    required this.firstFrameFile,
+    required this.lastFrameFile,
+    required this.clipFile,
+    required this.onPickImage,
+  });
+
+  final VideoCreationMode mode;
+  final TextEditingController firstFrameUrlController;
+  final TextEditingController lastFrameUrlController;
+  final TextEditingController clipUrlController;
+  final XFile? firstFrameFile;
+  final XFile? lastFrameFile;
+  final XFile? clipFile;
+  final ValueChanged<LocalAssetSlot> onPickImage;
+
+  @override
+  Widget build(BuildContext context) {
+    return _Panel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (mode == VideoCreationMode.firstFrame ||
+              mode == VideoCreationMode.firstLastFrame)
+            _AssetInput(
+              title: '首帧 First frame',
+              controller: firstFrameUrlController,
+              filePath: firstFrameFile?.path,
+              hintText: 'https://.../first-frame.png',
+              onPick: () => onPickImage(LocalAssetSlot.firstFrame),
+            ),
+          if (mode == VideoCreationMode.firstLastFrame) ...[
+            const SizedBox(height: 14),
+            _AssetInput(
+              title: '尾帧 Last frame',
+              controller: lastFrameUrlController,
+              filePath: lastFrameFile?.path,
+              hintText: 'https://.../last-frame.png',
+              onPick: () => onPickImage(LocalAssetSlot.lastFrame),
+            ),
+          ],
+          if (mode == VideoCreationMode.extendClip)
+            _AssetInput(
+              title: '继续 Extend clip',
+              controller: clipUrlController,
+              filePath: clipFile?.path,
+              hintText: 'https://.../clip.mp4',
+              onPick: () => onPickImage(LocalAssetSlot.clip),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AudioPanel extends StatelessWidget {
+  const _AudioPanel({
+    required this.controller,
+    required this.audioFile,
+    required this.onPickAudio,
+  });
+
+  final TextEditingController controller;
+  final PlatformFile? audioFile;
+  final VoidCallback onPickAudio;
+
+  @override
+  Widget build(BuildContext context) {
+    return _Panel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.graphic_eq_rounded,
+                  size: 17, color: AppColors.primaryAccent),
+              SizedBox(width: 6),
+              Text(
+                'Audio URL / 本地音频',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  decoration: const InputDecoration(
+                    hintText: '可选，模型支持时生效',
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              _IconActionButton(
+                icon: Icons.upload_file_rounded,
+                onTap: onPickAudio,
+              ),
+            ],
+          ),
+          if (audioFile != null) ...[
+            const SizedBox(height: 8),
+            _FileChip(label: audioFile!.name),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AssetInput extends StatelessWidget {
+  const _AssetInput({
+    required this.title,
+    required this.controller,
+    required this.filePath,
+    required this.hintText,
+    required this.onPick,
+  });
+
+  final String title;
+  final TextEditingController controller;
+  final String? filePath;
+  final String hintText;
+  final VoidCallback onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final fileName = filePath?.split(Platform.pathSeparator).last;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _FieldLabel(title),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: controller,
+                decoration: InputDecoration(hintText: hintText),
+              ),
+            ),
+            const SizedBox(width: 10),
+            _IconActionButton(icon: Icons.image_rounded, onTap: onPick),
+          ],
+        ),
+        if (filePath != null) ...[
+          const SizedBox(height: 8),
+          _FileChip(label: fileName ?? filePath!),
+        ],
+      ],
+    );
+  }
+}
+
+class _VideoAdvancedPanel extends StatelessWidget {
+  const _VideoAdvancedPanel({
+    required this.selectedModel,
+    required this.models,
+    required this.negativePromptController,
+    required this.seedController,
+    required this.templateController,
+    required this.size,
+    required this.duration,
+    required this.motion,
+    required this.promptExtension,
+    required this.watermark,
+    required this.onSizeChanged,
+    required this.onModelChanged,
+    required this.onDurationChanged,
+    required this.onMotionChanged,
+    required this.onPromptExtensionChanged,
+    required this.onWatermarkChanged,
+  });
+
+  final String? selectedModel;
+  final List<String> models;
+  final TextEditingController negativePromptController;
+  final TextEditingController seedController;
+  final TextEditingController templateController;
+  final String size;
+  final double duration;
+  final double motion;
+  final bool promptExtension;
+  final bool watermark;
+  final ValueChanged<String> onSizeChanged;
+  final ValueChanged<String?> onModelChanged;
+  final ValueChanged<double> onDurationChanged;
+  final ValueChanged<double> onMotionChanged;
+  final ValueChanged<bool> onPromptExtensionChanged;
+  final ValueChanged<bool> onWatermarkChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return _Panel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _FieldLabel('视频模型'),
+          _ModelDropdown(
+            selectedModel: selectedModel,
+            models: models,
+            onChanged: onModelChanged,
+          ),
+          const SizedBox(height: 16),
+          const _FieldLabel('尺寸 / 分辨率'),
+          _ChoiceWrap(
+            value: size,
+            values: const ['1024x576', '576x1024', '768x768', '720P', '1080P'],
+            onChanged: onSizeChanged,
+          ),
+          const SizedBox(height: 16),
+          _SliderField(
+            label: '时长',
+            valueLabel: '${duration.round()}s',
+            value: duration,
+            min: 3,
+            max: 15,
+            divisions: 12,
+            onChanged: onDurationChanged,
+          ),
+          _SliderField(
+            label: '动态幅度',
+            valueLabel: motion.toStringAsFixed(2),
+            value: motion,
+            min: 0,
+            max: 1,
+            divisions: 20,
+            onChanged: onMotionChanged,
+          ),
+          _SwitchRow(
+            title: 'Prompt extension',
+            subtitle: '让模型自动扩写提示词，模型支持时生效',
+            value: promptExtension,
+            onChanged: onPromptExtensionChanged,
+          ),
+          _SwitchRow(
+            title: 'Watermark',
+            subtitle: '控制是否添加水印，模型支持时生效',
+            value: watermark,
+            onChanged: onWatermarkChanged,
+          ),
+          const SizedBox(height: 12),
+          const _FieldLabel('负面提示词'),
+          TextField(
+            controller: negativePromptController,
+            minLines: 2,
+            maxLines: 3,
+            decoration: const InputDecoration(hintText: '不希望出现在视频中的内容'),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _CompactField(
+                  label: '种子',
+                  controller: seedController,
+                  hintText: '可选',
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _CompactField(
+                  label: '模板',
+                  controller: templateController,
+                  hintText: '可选',
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ModelDropdown extends StatelessWidget {
+  const _ModelDropdown({
+    required this.selectedModel,
+    required this.models,
+    required this.onChanged,
+  });
+
+  final String? selectedModel;
+  final List<String> models;
+  final ValueChanged<String?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final value = models.contains(selectedModel) ? selectedModel : null;
+
+    return Container(
+      height: 48,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.04),
+        borderRadius: AppRadii.inputRadius,
+        border: Border.all(color: AppColors.border),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: value,
+          hint: const Text('请先在设置页获取可用模型'),
+          isExpanded: true,
+          menuMaxHeight: 280,
+          borderRadius: AppRadii.inputRadius,
+          dropdownColor: AppColors.surface,
+          iconEnabledColor: AppColors.muted,
+          style: const TextStyle(
+            color: AppColors.foreground,
+            fontFamily: 'monospace',
+            fontSize: 13,
+          ),
+          items: [
+            for (final model in models)
+              DropdownMenuItem(
+                value: model,
+                child: Text(
+                  model,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+          ],
+          onChanged: models.isEmpty ? null : onChanged,
+        ),
+      ),
+    );
+  }
+}
+
+class _ReferenceFilePicker extends StatelessWidget {
+  const _ReferenceFilePicker({
+    required this.title,
+    required this.filePath,
+    required this.onPick,
+  });
+
+  final String title;
+  final String? filePath;
+  final VoidCallback onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final fileName = filePath?.split(Platform.pathSeparator).last;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _FieldLabel(title),
+        Row(
+          children: [
+            Expanded(
+              child: Container(
+                height: 48,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                alignment: Alignment.centerLeft,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.04),
+                  borderRadius: AppRadii.inputRadius,
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Text(
+                  fileName ?? '可选，选择本地参考图片',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: fileName == null
+                        ? AppColors.muted
+                        : AppColors.foreground,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            _IconActionButton(icon: Icons.image_rounded, onTap: onPick),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _CountStepper extends StatelessWidget {
+  const _CountStepper({required this.value, required this.onChanged});
+
+  final int value;
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        _StepperButton(
+          icon: Icons.remove_rounded,
+          onTap: value <= 1 ? null : () => onChanged(value - 1),
+        ),
+        Expanded(
+          child: Center(
+            child: Text(
+              '$value',
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ),
+        _StepperButton(
+          icon: Icons.add_rounded,
+          onTap: value >= 4 ? null : () => onChanged(value + 1),
+        ),
+      ],
+    );
+  }
+}
+
+class _StepperButton extends StatelessWidget {
+  const _StepperButton({required this.icon, required this.onTap});
+
+  final IconData icon;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton.filledTonal(
+      onPressed: onTap,
+      icon: Icon(icon),
+      style: IconButton.styleFrom(
+        backgroundColor: AppColors.secondaryAccent.withValues(alpha: 0.12),
+        disabledBackgroundColor: Colors.white.withValues(alpha: 0.04),
+        foregroundColor: AppColors.secondaryAccent,
+        disabledForegroundColor: AppColors.muted,
+      ),
+    );
+  }
+}
+
+class _CompactField extends StatelessWidget {
+  const _CompactField({
+    required this.label,
+    required this.controller,
+    required this.hintText,
+  });
+
+  final String label;
+  final TextEditingController controller;
+  final String hintText;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _FieldLabel(label),
+        TextField(
+          controller: controller,
+          decoration: InputDecoration(hintText: hintText),
+        ),
+      ],
+    );
+  }
+}
+
+class _SliderField extends StatelessWidget {
+  const _SliderField({
+    required this.label,
+    required this.valueLabel,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.divisions,
+    required this.onChanged,
+  });
+
+  final String label;
+  final String valueLabel;
+  final double value;
+  final double min;
+  final double max;
+  final int divisions;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            _FieldLabel(label),
+            Text(
+              valueLabel,
+              style: const TextStyle(
+                color: AppColors.secondaryAccent,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+        Slider(
+          value: value,
+          min: min,
+          max: max,
+          divisions: divisions,
+          onChanged: onChanged,
+        ),
+      ],
+    );
+  }
+}
+
+class _SwitchRow extends StatelessWidget {
+  const _SwitchRow({
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: const TextStyle(fontSize: 13)),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: const TextStyle(color: AppColors.muted, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+          Switch(value: value, onChanged: onChanged),
+        ],
+      ),
+    );
+  }
+}
+
+class _ChoiceWrap extends StatelessWidget {
+  const _ChoiceWrap({
+    required this.value,
+    required this.values,
+    required this.onChanged,
+  });
+
+  final String value;
+  final List<String> values;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: values.map((item) {
+        final selected = item == value;
+        return ChoiceChip(
+          label: Text(item),
+          selected: selected,
+          onSelected: (_) => onChanged(item),
+          selectedColor: AppColors.secondaryAccent.withValues(alpha: 0.18),
+          backgroundColor: Colors.white.withValues(alpha: 0.04),
+          side: BorderSide(
+            color: selected ? AppColors.secondaryAccent : AppColors.border,
+          ),
+        );
+      }).toList(),
+    );
+  }
+}
+
+class _PillSegmented<T> extends StatelessWidget {
+  const _PillSegmented({
+    required this.value,
+    required this.values,
+    required this.labelOf,
+    required this.onChanged,
+  });
+
+  final T value;
+  final List<T> values;
+  final String Function(T value) labelOf;
+  final ValueChanged<T> onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -274,202 +1506,44 @@ class _SegmentedMode extends StatelessWidget {
         borderRadius: BorderRadius.circular(28),
       ),
       child: Row(
-        children: [
-          _SegmentButton(
-            label: '文生视频',
-            active: mode == CreationMode.textToVideo,
-            onTap: () => onChanged(CreationMode.textToVideo),
-          ),
-          _SegmentButton(
-            label: '图生视频',
-            active: mode == CreationMode.imageToVideo,
-            onTap: () => onChanged(CreationMode.imageToVideo),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SegmentButton extends StatelessWidget {
-  const _SegmentButton({
-    required this.label,
-    required this.active,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool active;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(26),
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 220),
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          decoration: BoxDecoration(
-            color: active
-                ? Colors.white.withValues(alpha: 0.06)
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(26),
-            boxShadow: active
-                ? [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.3),
-                      blurRadius: 3,
-                      offset: const Offset(0, 1),
-                    ),
-                  ]
-                : null,
-          ),
-          child: Text(
-            label,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: active ? AppColors.foreground : AppColors.muted,
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _PromptCard extends StatelessWidget {
-  const _PromptCard({
-    required this.mode,
-    required this.controller,
-    required this.selectedImagePath,
-    required this.onChanged,
-    required this.onPickImage,
-  });
-
-  final CreationMode mode;
-  final TextEditingController controller;
-  final String? selectedImagePath;
-  final ValueChanged<String> onChanged;
-  final VoidCallback onPickImage;
-
-  @override
-  Widget build(BuildContext context) {
-    final length = controller.text.length;
-
-    return Container(
-      constraints: const BoxConstraints(minHeight: 150),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: AppRadii.cardRadius,
-        border: Border.all(color: AppColors.border),
-      ),
-      child: mode == CreationMode.textToVideo
-          ? Column(
-              children: [
-                TextField(
-                  controller: controller,
-                  onChanged: onChanged,
-                  maxLength: 500,
-                  maxLines: 6,
-                  decoration: const InputDecoration(
-                    counterText: '',
-                    filled: false,
-                    border: InputBorder.none,
-                    enabledBorder: InputBorder.none,
-                    focusedBorder: InputBorder.none,
-                    hintText:
-                        '描述你想要的画面...\n例如：一段赛博朋克东京街头的航拍镜头，霓虹灯在雨中闪烁，慢动作 cinematic',
-                  ),
-                ),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: Text(
-                    '$length / 500',
-                    style: TextStyle(
-                      color: length > 450 ? AppColors.danger : AppColors.muted,
-                      fontSize: 11,
-                    ),
-                  ),
-                ),
-              ],
-            )
-          : InkWell(
-              borderRadius: AppRadii.inputRadius,
-              onTap: onPickImage,
-              child: Container(
-                height: 140,
-                clipBehavior: Clip.antiAlias,
+        children: values.map((item) {
+          final active = item == value;
+          return Expanded(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(26),
+              onTap: () => onChanged(item),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 220),
+                padding: const EdgeInsets.symmetric(vertical: 10),
                 decoration: BoxDecoration(
-                  borderRadius: AppRadii.inputRadius,
-                  border: Border.all(
-                    color: AppColors.border,
-                    width: 2,
-                    style: BorderStyle.solid,
+                  color: active
+                      ? Colors.white.withValues(alpha: 0.06)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(26),
+                  boxShadow: active
+                      ? [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.3),
+                            blurRadius: 3,
+                            offset: const Offset(0, 1),
+                          ),
+                        ]
+                      : null,
+                ),
+                child: Text(
+                  labelOf(item),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: active ? AppColors.foreground : AppColors.muted,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-                child: selectedImagePath == null
-                    ? const Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          CircleAvatar(
-                            radius: 20,
-                            backgroundColor: Color(0x1F3B82F6),
-                            child: Icon(
-                              Icons.upload_rounded,
-                              color: AppColors.secondaryAccent,
-                            ),
-                          ),
-                          SizedBox(height: 10),
-                          Text(
-                            '+ 选择参考图片',
-                            style: TextStyle(color: AppColors.muted),
-                          ),
-                          SizedBox(height: 4),
-                          Text(
-                            '支持 JPG / PNG，图片会在本地转为 Base64',
-                            style: TextStyle(
-                              color: AppColors.muted,
-                              fontSize: 11,
-                            ),
-                          ),
-                        ],
-                      )
-                    : Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          Image.file(
-                            File(selectedImagePath!),
-                            fit: BoxFit.cover,
-                          ),
-                          Positioned(
-                            right: 8,
-                            bottom: 8,
-                            child: DecoratedBox(
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.55),
-                                borderRadius: BorderRadius.circular(18),
-                              ),
-                              child: const Padding(
-                                padding: EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 5,
-                                ),
-                                child: Text(
-                                  '更换图片',
-                                  style: TextStyle(fontSize: 11),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
               ),
             ),
+          );
+        }).toList(),
+      ),
     );
   }
 }
@@ -489,26 +1563,16 @@ class _AdvancedToggle extends StatelessWidget {
         alignment: Alignment.centerLeft,
         padding: const EdgeInsets.symmetric(vertical: 10),
       ),
-      icon: Text(open ? '▴' : '▾', style: const TextStyle(fontSize: 10)),
-      label: const Text('高级选项'),
+      icon: Icon(open ? Icons.expand_less_rounded : Icons.expand_more_rounded),
+      label: const Text('生成参数'),
     );
   }
 }
 
-class _AdvancedPanel extends StatelessWidget {
-  const _AdvancedPanel({
-    required this.modelController,
-    required this.ratio,
-    required this.motion,
-    required this.onRatioChanged,
-    required this.onMotionChanged,
-  });
+class _Panel extends StatelessWidget {
+  const _Panel({required this.child});
 
-  final TextEditingController modelController;
-  final String ratio;
-  final double motion;
-  final ValueChanged<String> onRatioChanged;
-  final ValueChanged<double> onMotionChanged;
+  final Widget child;
 
   @override
   Widget build(BuildContext context) {
@@ -519,67 +1583,7 @@ class _AdvancedPanel extends StatelessWidget {
         borderRadius: AppRadii.cardRadius,
         border: Border.all(color: AppColors.border),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const _FieldLabel('模型'),
-          TextField(
-            controller: modelController,
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
-          ),
-          const SizedBox(height: 16),
-          const _FieldLabel('画面比例'),
-          Row(
-            children: [
-              _RatioButton(
-                label: '16:9 横屏',
-                ratio: '16:9',
-                graphicSize: const Size(32, 18),
-                selected: ratio == '16:9',
-                onTap: onRatioChanged,
-              ),
-              const SizedBox(width: 10),
-              _RatioButton(
-                label: '9:16 竖屏',
-                ratio: '9:16',
-                graphicSize: const Size(18, 32),
-                selected: ratio == '9:16',
-                onTap: onRatioChanged,
-              ),
-              const SizedBox(width: 10),
-              _RatioButton(
-                label: '1:1 方形',
-                ratio: '1:1',
-                graphicSize: const Size(22, 22),
-                selected: ratio == '1:1',
-                onTap: onRatioChanged,
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const _FieldLabel('动态幅度'),
-              Text(
-                motion.toStringAsFixed(2),
-                style: const TextStyle(
-                  color: AppColors.secondaryAccent,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-          Slider(
-            value: motion,
-            min: 0,
-            max: 1,
-            divisions: 20,
-            onChanged: onMotionChanged,
-          ),
-        ],
-      ),
+      child: child,
     );
   }
 }
@@ -605,59 +1609,84 @@ class _FieldLabel extends StatelessWidget {
   }
 }
 
-class _RatioButton extends StatelessWidget {
-  const _RatioButton({
-    required this.label,
-    required this.ratio,
-    required this.graphicSize,
-    required this.selected,
-    required this.onTap,
-  });
+class _IconActionButton extends StatelessWidget {
+  const _IconActionButton({required this.icon, required this.onTap});
 
-  final String label;
-  final String ratio;
-  final Size graphicSize;
-  final bool selected;
-  final ValueChanged<String> onTap;
+  final IconData icon;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final color = selected ? AppColors.secondaryAccent : AppColors.muted;
-
-    return Expanded(
-      child: InkWell(
-        borderRadius: AppRadii.inputRadius,
-        onTap: () => onTap(ratio),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-          decoration: BoxDecoration(
-            color: selected
-                ? AppColors.secondaryAccent.withValues(alpha: 0.1)
-                : Colors.white.withValues(alpha: 0.04),
-            borderRadius: AppRadii.inputRadius,
-            border: Border.all(
-                color: selected ? AppColors.secondaryAccent : AppColors.border),
-          ),
-          child: Column(
-            children: [
-              Container(
-                width: graphicSize.width,
-                height: graphicSize.height,
-                decoration: BoxDecoration(
-                  border: Border.all(color: color, width: 1.5),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                label,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    color: color, fontSize: 11, fontWeight: FontWeight.w500),
-              ),
-            ],
-          ),
+    return InkWell(
+      borderRadius: AppRadii.buttonRadius,
+      onTap: onTap,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: AppColors.secondaryAccent.withValues(alpha: 0.12),
+          borderRadius: AppRadii.buttonRadius,
+          border: Border.all(
+              color: AppColors.secondaryAccent.withValues(alpha: 0.35)),
         ),
+        child: Icon(icon, color: AppColors.secondaryAccent),
+      ),
+    );
+  }
+}
+
+class _FileChip extends StatelessWidget {
+  const _FileChip({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.attach_file_rounded,
+              size: 14, color: AppColors.muted),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: AppColors.muted, fontSize: 11),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ImageHint extends StatelessWidget {
+  const _ImageHint();
+
+  @override
+  Widget build(BuildContext context) {
+    return const _Panel(
+      child: Row(
+        children: [
+          Icon(Icons.auto_awesome_rounded, color: AppColors.primaryAccent),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '生成后的图片可作为视频首帧、尾帧或角色参考素材使用。',
+              style:
+                  TextStyle(color: AppColors.muted, fontSize: 12, height: 1.5),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -673,10 +1702,12 @@ class _GradientButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
+        gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFF10B981), Color(0xFF059669)],
+          colors: onTap == null
+              ? const [AppColors.border, AppColors.border]
+              : const [Color(0xFF10B981), Color(0xFF059669)],
         ),
         borderRadius: AppRadii.buttonRadius,
         boxShadow: [
@@ -752,13 +1783,13 @@ class _ConfigSheet extends StatelessWidget {
                     ),
                     const SizedBox(height: 16),
                     const Text(
-                      '未配置 API 密钥',
+                      '未配置 API 凭据',
                       style:
                           TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'WeaveFlux 需要兼容 OpenAI 规范的 Base URL 和 API Key 才能开始创作。所有凭证仅存储在本地 Android KeyStore 中。',
+                      'WeaveFlux 需要兼容 OpenAI 规范的 Base URL 和 API Key 才能开始创作。所有凭据仅存储在本地 Android KeyStore 中。',
                       style: TextStyle(
                           color: AppColors.muted, fontSize: 13, height: 1.6),
                     ),
@@ -781,5 +1812,34 @@ class _ConfigSheet extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+extension on VideoCreationMode {
+  String get label {
+    return switch (this) {
+      VideoCreationMode.promptOnly => 'Prompt only',
+      VideoCreationMode.firstFrame => 'First frame',
+      VideoCreationMode.firstLastFrame => 'First+Last',
+      VideoCreationMode.extendClip => 'Extend a clip',
+    };
+  }
+
+  String get description {
+    return switch (this) {
+      VideoCreationMode.promptOnly => '纯文本生成',
+      VideoCreationMode.firstFrame => '首帧到视频',
+      VideoCreationMode.firstLastFrame => '首尾帧控制',
+      VideoCreationMode.extendClip => '继续已有片段',
+    };
+  }
+
+  IconData get icon {
+    return switch (this) {
+      VideoCreationMode.promptOnly => Icons.notes_rounded,
+      VideoCreationMode.firstFrame => Icons.filter_1_rounded,
+      VideoCreationMode.firstLastFrame => Icons.compare_rounded,
+      VideoCreationMode.extendClip => Icons.playlist_play_rounded,
+    };
   }
 }

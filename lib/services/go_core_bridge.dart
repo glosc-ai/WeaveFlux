@@ -35,20 +35,46 @@ class GoCoreBridge {
       },
     );
 
-    final rawModels = raw?['models'];
-    final models = rawModels is List
-        ? rawModels
-            .whereType<String>()
-            .where((model) => model.isNotEmpty)
-            .toList()
-        : <String>[];
+    final models = _readStringList(raw?['models']);
+    final videoModels = _readStringList(raw?['video_models']);
+    final imageModels = _readStringList(raw?['image_models']);
+    final fallbackImageModels = imageModels.isEmpty
+        ? models.where(_looksLikeImageModel).toList()
+        : imageModels;
 
     return ModelFetchResult(
       success: raw?['success'] == true,
       models: models,
+      videoModels: videoModels.isEmpty ? models : videoModels,
+      imageModels: fallbackImageModels,
       error: raw?['error'] as String? ?? 'Unknown models result',
       debug: raw?['debug'] as String? ?? '',
     );
+  }
+
+  static List<String> _readStringList(Object? raw) {
+    return raw is List
+        ? raw.whereType<String>().where((model) => model.isNotEmpty).toList()
+        : <String>[];
+  }
+
+  static bool _looksLikeImageModel(String model) {
+    final value = model.toLowerCase();
+    const keywords = [
+      'image',
+      'img',
+      't2i',
+      'i2i',
+      'flux',
+      'sdxl',
+      'stable-diffusion',
+      'dall-e',
+      'imagen',
+      'midjourney',
+      'gpt-image',
+      'seedream',
+    ];
+    return keywords.any(value.contains);
   }
 
   static Future<DispatchVideoTaskResult> dispatchVideoTask({
@@ -94,12 +120,16 @@ class ModelFetchResult {
   const ModelFetchResult({
     required this.success,
     required this.models,
+    required this.videoModels,
+    required this.imageModels,
     required this.error,
     required this.debug,
   });
 
   final bool success;
   final List<String> models;
+  final List<String> videoModels;
+  final List<String> imageModels;
   final String error;
   final String debug;
 }
