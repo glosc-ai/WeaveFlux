@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../services/go_core_bridge.dart';
 import '../theme/app_theme.dart';
 import 'create_workspace.dart';
 
@@ -18,25 +20,22 @@ class _SettingsPanelState extends State<SettingsPanel> {
   static const _apiKeyKey = 'wf_api_key';
   static const _modelKey = 'wf_selected_model';
 
-  static const _models = [
-    't2v-default-model',
-    'kling-v2',
-    'wanx2.1-t2v-plus',
-    'vidu-1.5',
-  ];
-
   final _storage = const FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
   final _baseUrlController =
-      TextEditingController(text: 'https://api.glosc-ai.one/v1');
+      TextEditingController(text: 'https://one.gloscai.com/v1');
   final _apiKeyController = TextEditingController();
 
-  String _selectedModel = _models.first;
+  List<String> _models = <String>[];
+  String? _selectedModel;
+  String? _lastFetchedCredentialKey;
   bool _keyVisible = false;
+  bool _saving = false;
+  bool _fetchingModels = false;
   bool _testing = false;
   bool _checkingUpdate = false;
-  _TestResult? _result;
+  _PanelResult? _result;
   _UpdateResult? _updateResult;
 
   @override
@@ -57,6 +56,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
     final apiKey = await _storage.read(key: _apiKeyKey);
     final model = await _storage.read(key: _modelKey);
     if (!mounted) return;
+
     setState(() {
       if (baseUrl != null && baseUrl.isNotEmpty) {
         _baseUrlController.text = baseUrl;
@@ -64,7 +64,10 @@ class _SettingsPanelState extends State<SettingsPanel> {
       if (apiKey != null) {
         _apiKeyController.text = apiKey;
       }
-      if (model != null && _models.contains(model)) {
+      if (model != null && model.isNotEmpty) {
+        if (!_models.contains(model)) {
+          _models = [model, ..._models];
+        }
         _selectedModel = model;
       }
     });
@@ -76,34 +79,186 @@ class _SettingsPanelState extends State<SettingsPanel> {
     await _storage.write(key: _modelKey, value: model);
   }
 
-  Future<void> _testConnection() async {
-    final baseUrl = _baseUrlController.text.trim();
-    final apiKey = _apiKeyController.text.trim();
+  Future<void> _fetchModels() async {
+    final values = _readCredentialInputs(requireModel: false);
+    if (values == null) return;
 
-    if (baseUrl.isEmpty) {
-      setState(() => _result = _TestResult.error('请输入 Base URL', '端点地址不能为空'));
-      return;
+    setState(() {
+      _fetchingModels = true;
+      _result = null;
+    });
+
+    try {
+      final modelsResult = await GoCoreBridge.fetchModels(
+        baseUrl: values.baseUrl,
+        apiKey: values.apiKey,
+      );
+
+      if (!mounted) return;
+      if (modelsResult.success) {
+        final models = modelsResult.models;
+        final selected = models.contains(_selectedModel)
+            ? _selectedModel
+            : models.isNotEmpty
+                ? models.first
+                : null;
+        setState(() {
+          _models = models;
+          _selectedModel = selected;
+          _lastFetchedCredentialKey = values.cacheKey;
+          _result = _PanelResult.success(
+            '模型获取成功',
+            '已筛选出 ${models.length} 个候选视频模型，请选择后测试连接。',
+          );
+        });
+        if (selected != null) {
+          await _storage.write(key: _modelKey, value: selected);
+        }
+      } else {
+        setState(() {
+          _result = _PanelResult.error(
+            '模型获取失败',
+            modelsResult.error,
+          );
+        });
+      }
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _result = _PanelResult.error('模型获取失败', error.message ?? error.code);
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _result = _PanelResult.error('模型获取失败', error.toString());
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _fetchingModels = false);
+      }
     }
-    if (apiKey.isEmpty) {
-      setState(() => _result = _TestResult.error('请输入 API Key', 'API 密钥不能为空'));
-      return;
+  }
+
+  Future<void> _saveSettings() async {
+    final values = _readCredentialInputs();
+    if (values == null) return;
+
+    setState(() {
+      _saving = true;
+      _result = null;
+    });
+
+    try {
+      await _persistSettings(values);
+      if (!mounted) return;
+      setState(() {
+        _result = _PanelResult.success(
+            '配置已加密保存', 'Base URL、API Key 和默认模型已保存至本地。');
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _result = _PanelResult.error('保存失败', error.toString());
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _saving = false);
+      }
     }
+  }
+
+  Future<void> _testConnection() async {
+    final values = _readCredentialInputs();
+    if (values == null) return;
 
     setState(() {
       _testing = true;
       _result = null;
     });
 
-    await Future<void>.delayed(const Duration(milliseconds: 850));
-    await _storage.write(key: _baseUrlKey, value: baseUrl);
-    await _storage.write(key: _apiKeyKey, value: apiKey);
-    await _storage.write(key: _modelKey, value: _selectedModel);
+    try {
+      final testResult = await GoCoreBridge.testConnection(
+        baseUrl: values.baseUrl,
+        apiKey: values.apiKey,
+      );
 
-    if (!mounted) return;
-    setState(() {
-      _testing = false;
-      _result = _TestResult.success('通信成功', '端点、密钥和默认模型已加密保存');
-    });
+      if (!mounted) return;
+      if (testResult.success) {
+        await _persistSettings(values);
+        if (!mounted) return;
+        setState(() {
+          _result = _PanelResult.success(
+            '通信成功',
+            '模型响应正常，配置已加密保存。',
+          );
+        });
+      } else {
+        setState(() {
+          _result = _PanelResult.error('通信失败', testResult.error);
+        });
+      }
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _result = _PanelResult.error(
+          '通信失败',
+          error.message ?? error.code,
+        );
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _result = _PanelResult.error('通信失败', error.toString());
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _testing = false);
+      }
+    }
+  }
+
+  _CredentialInput? _readCredentialInputs({bool requireModel = true}) {
+    final baseUrl =
+        _baseUrlController.text.trim().replaceAll(RegExp(r'/+$'), '');
+    final apiKey = _apiKeyController.text.trim();
+
+    if (baseUrl.isEmpty) {
+      setState(() => _result = _PanelResult.error('请输入 Base URL', '端点地址不能为空。'));
+      return null;
+    }
+    final uri = Uri.tryParse(baseUrl);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) {
+      setState(() => _result =
+          _PanelResult.error('Base URL 格式错误', '请输入完整的 HTTPS OpenAI 兼容端点。'));
+      return null;
+    }
+    if (apiKey.isEmpty) {
+      setState(
+          () => _result = _PanelResult.error('请输入 API Key', 'API 密钥不能为空。'));
+      return null;
+    }
+    if (requireModel && _selectedModel == null) {
+      setState(() => _result = _PanelResult.error('请选择模型', '请先获取可用模型并选择一个模型。'));
+      return null;
+    }
+
+    final values = _CredentialInput(baseUrl: baseUrl, apiKey: apiKey);
+    if (requireModel && _lastFetchedCredentialKey != values.cacheKey) {
+      setState(() => _result = _PanelResult.error(
+          '请先获取模型', 'Base URL 或 API Key 已变更，请重新获取可用模型后再继续。'));
+      return null;
+    }
+
+    return values;
+  }
+
+  Future<void> _persistSettings(_CredentialInput values) async {
+    await _storage.write(key: _baseUrlKey, value: values.baseUrl);
+    await _storage.write(key: _apiKeyKey, value: values.apiKey);
+    final model = _selectedModel;
+    if (model != null) {
+      await _storage.write(key: _modelKey, value: model);
+    }
   }
 
   Future<void> _checkUpdate() async {
@@ -125,6 +280,8 @@ class _SettingsPanelState extends State<SettingsPanel> {
 
   @override
   Widget build(BuildContext context) {
+    final busy = _saving || _fetchingModels || _testing;
+
     return WeaveScaffold(
       activeRoute: SettingsPanel.routeName,
       header: const _SettingsHeader(),
@@ -141,9 +298,11 @@ class _SettingsPanelState extends State<SettingsPanel> {
                 child: TextField(
                   controller: _baseUrlController,
                   keyboardType: TextInputType.url,
+                  textInputAction: TextInputAction.next,
+                  enabled: !busy,
                   style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
                   decoration: const InputDecoration(
-                    hintText: 'https://api.glosc-ai.one/v1',
+                    hintText: 'https://one.gloscai.com/v1',
                     filled: false,
                     border: InputBorder.none,
                     enabledBorder: InputBorder.none,
@@ -158,7 +317,9 @@ class _SettingsPanelState extends State<SettingsPanel> {
                 label: 'API Key',
                 trailing: IconButton(
                   tooltip: _keyVisible ? '隐藏 API Key' : '显示 API Key',
-                  onPressed: () => setState(() => _keyVisible = !_keyVisible),
+                  onPressed: busy
+                      ? null
+                      : () => setState(() => _keyVisible = !_keyVisible),
                   icon: Icon(
                     _keyVisible
                         ? Icons.visibility_off_outlined
@@ -169,6 +330,8 @@ class _SettingsPanelState extends State<SettingsPanel> {
                 child: TextField(
                   controller: _apiKeyController,
                   obscureText: !_keyVisible,
+                  textInputAction: TextInputAction.done,
+                  enabled: !busy,
                   style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
                   decoration: const InputDecoration(
                     hintText: 'sk-xxxxxxxxxxxxxxxxxxxxxxxx',
@@ -188,40 +351,97 @@ class _SettingsPanelState extends State<SettingsPanel> {
               _DropdownRow(
                 selectedModel: _selectedModel,
                 models: _models,
-                onChanged: _selectModel,
+                onChanged: busy ? null : _selectModel,
               ),
             ],
           ),
-          const SizedBox(height: 20),
-          const _SectionLabel('连接检测'),
+          const SizedBox(height: 12),
           SizedBox(
-            height: 48,
-            child: OutlinedButton(
+            height: 44,
+            child: OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
-                foregroundColor: AppColors.secondaryAccent,
-                side: const BorderSide(color: AppColors.secondaryAccent),
+                foregroundColor: AppColors.primaryAccent,
+                side: const BorderSide(color: AppColors.primaryAccent),
                 backgroundColor:
-                    AppColors.secondaryAccent.withValues(alpha: 0.08),
+                    AppColors.primaryAccent.withValues(alpha: 0.08),
               ),
-              onPressed: _testing ? null : _testConnection,
-              child: _testing
+              onPressed: busy ? null : _fetchModels,
+              icon: _fetchingModels
                   ? const SizedBox(
-                      width: 18,
-                      height: 18,
+                      width: 16,
+                      height: 16,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: AppColors.secondaryAccent,
+                        color: AppColors.primaryAccent,
                       ),
                     )
-                  : const Text('测试连接'),
+                  : const Icon(Icons.cloud_sync_outlined, size: 18),
+              label: const Text('获取可用模型'),
             ),
+          ),
+          const SizedBox(height: 20),
+          const _SectionLabel('连接检测'),
+          Row(
+            children: [
+              Expanded(
+                child: SizedBox(
+                  height: 48,
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.primaryAccent,
+                      side: const BorderSide(color: AppColors.primaryAccent),
+                      backgroundColor:
+                          AppColors.primaryAccent.withValues(alpha: 0.08),
+                    ),
+                    onPressed: busy ? null : _saveSettings,
+                    icon: _saving
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: AppColors.primaryAccent,
+                            ),
+                          )
+                        : const Icon(Icons.lock_outline_rounded, size: 18),
+                    label: const Text('保存配置'),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: SizedBox(
+                  height: 48,
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.secondaryAccent,
+                      side: const BorderSide(color: AppColors.secondaryAccent),
+                      backgroundColor:
+                          AppColors.secondaryAccent.withValues(alpha: 0.08),
+                    ),
+                    onPressed: busy ? null : _testConnection,
+                    icon: _testing
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: AppColors.secondaryAccent,
+                            ),
+                          )
+                        : const Icon(Icons.wifi_tethering_rounded, size: 18),
+                    label: const Text('测试连接'),
+                  ),
+                ),
+              ),
+            ],
           ),
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 220),
             child: _result == null
                 ? const SizedBox(height: 12)
                 : Padding(
-                    key: ValueKey(_result!.message),
+                    key: ValueKey('${_result!.message}:${_result!.detail}'),
                     padding: const EdgeInsets.only(top: 12),
                     child: _ResultBanner(result: _result!),
                   ),
@@ -368,9 +588,9 @@ class _DropdownRow extends StatelessWidget {
     required this.onChanged,
   });
 
-  final String selectedModel;
+  final String? selectedModel;
   final List<String> models;
-  final ValueChanged<String?> onChanged;
+  final ValueChanged<String?>? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -381,8 +601,11 @@ class _DropdownRow extends StatelessWidget {
           CircleAvatar(
             radius: 18,
             backgroundColor: AppColors.primaryAccent.withValues(alpha: 0.12),
-            child: const Icon(Icons.memory_rounded,
-                color: AppColors.primaryAccent, size: 16),
+            child: const Icon(
+              Icons.memory_rounded,
+              color: AppColors.primaryAccent,
+              size: 16,
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -409,7 +632,10 @@ class _DropdownRow extends StatelessWidget {
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
                       value: selectedModel,
+                      hint: const Text('请先获取可用模型'),
                       isExpanded: true,
+                      menuMaxHeight: 260,
+                      borderRadius: AppRadii.inputRadius,
                       dropdownColor: AppColors.surface,
                       iconEnabledColor: AppColors.muted,
                       style: const TextStyle(
@@ -419,7 +645,14 @@ class _DropdownRow extends StatelessWidget {
                       ),
                       items: [
                         for (final model in models)
-                          DropdownMenuItem(value: model, child: Text(model)),
+                          DropdownMenuItem(
+                            value: model,
+                            child: Text(
+                              model,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
                       ],
                       onChanged: onChanged,
                     ),
@@ -437,7 +670,7 @@ class _DropdownRow extends StatelessWidget {
 class _ResultBanner extends StatelessWidget {
   const _ResultBanner({required this.result});
 
-  final _TestResult result;
+  final _PanelResult result;
 
   @override
   Widget build(BuildContext context) {
@@ -452,8 +685,11 @@ class _ResultBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(result.success ? Icons.check_circle : Icons.error_outline,
-              color: color, size: 18),
+          Icon(
+            result.success ? Icons.check_circle : Icons.error_outline,
+            color: color,
+            size: 18,
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
@@ -462,13 +698,18 @@ class _ResultBanner extends StatelessWidget {
                 Text(
                   result.message,
                   style: TextStyle(
-                      color: color, fontSize: 13, fontWeight: FontWeight.w600),
+                    color: color,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   result.detail,
                   style: TextStyle(
-                      color: color.withValues(alpha: 0.8), fontSize: 11),
+                    color: color.withValues(alpha: 0.8),
+                    fontSize: 11,
+                  ),
                 ),
               ],
             ),
@@ -508,20 +749,29 @@ class _UpdateCard extends StatelessWidget {
                 radius: 18,
                 backgroundColor:
                     AppColors.secondaryAccent.withValues(alpha: 0.12),
-                child: const Icon(Icons.system_update_alt_rounded,
-                    color: AppColors.secondaryAccent, size: 16),
+                child: const Icon(
+                  Icons.system_update_alt_rounded,
+                  color: AppColors.secondaryAccent,
+                  size: 16,
+                ),
               ),
               const SizedBox(width: 12),
               const Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('应用版本',
-                        style: TextStyle(
-                            fontSize: 14, fontWeight: FontWeight.w600)),
+                    Text(
+                      '应用版本',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                     SizedBox(height: 2),
-                    Text('WeaveFlux 0.1.0',
-                        style: TextStyle(color: AppColors.muted, fontSize: 12)),
+                    Text(
+                      'WeaveFlux 0.1.0',
+                      style: TextStyle(color: AppColors.muted, fontSize: 12),
+                    ),
                   ],
                 ),
               ),
@@ -554,9 +804,12 @@ class _UpdateCard extends StatelessWidget {
                 ? const Padding(
                     padding: EdgeInsets.only(top: 12),
                     child: Text(
-                      '检测会读取本地版本信息，并在后续接入发布源后比较最新版本。',
+                      '检测会读取本地版本信息，后续接入发布源后比较最新版本。',
                       style: TextStyle(
-                          color: AppColors.muted, fontSize: 12, height: 1.5),
+                        color: AppColors.muted,
+                        fontSize: 12,
+                        height: 1.5,
+                      ),
                     ),
                   )
                 : Padding(
@@ -564,8 +817,11 @@ class _UpdateCard extends StatelessWidget {
                     padding: const EdgeInsets.only(top: 12),
                     child: Row(
                       children: [
-                        const Icon(Icons.verified_rounded,
-                            color: AppColors.primaryAccent, size: 18),
+                        const Icon(
+                          Icons.verified_rounded,
+                          color: AppColors.primaryAccent,
+                          size: 18,
+                        ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Column(
@@ -583,7 +839,9 @@ class _UpdateCard extends StatelessWidget {
                               Text(
                                 result!.detail,
                                 style: const TextStyle(
-                                    color: AppColors.muted, fontSize: 11),
+                                  color: AppColors.muted,
+                                  fontSize: 11,
+                                ),
                               ),
                             ],
                           ),
@@ -617,11 +875,16 @@ class _SecurityCard extends StatelessWidget {
         children: [
           const Row(
             children: [
-              Icon(Icons.lock_outline_rounded,
-                  color: AppColors.primaryAccent, size: 18),
+              Icon(
+                Icons.lock_outline_rounded,
+                color: AppColors.primaryAccent,
+                size: 18,
+              ),
               SizedBox(width: 6),
-              Text('安全说明',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              Text(
+                '安全说明',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              ),
             ],
           ),
           const SizedBox(height: 8),
@@ -659,15 +922,27 @@ class _SecurityCard extends StatelessWidget {
   }
 }
 
-class _TestResult {
-  const _TestResult._(this.success, this.message, this.detail);
+class _CredentialInput {
+  const _CredentialInput({
+    required this.baseUrl,
+    required this.apiKey,
+  });
 
-  factory _TestResult.success(String message, String detail) {
-    return _TestResult._(true, message, detail);
+  final String baseUrl;
+  final String apiKey;
+
+  String get cacheKey => '$baseUrl\n$apiKey';
+}
+
+class _PanelResult {
+  const _PanelResult._(this.success, this.message, this.detail);
+
+  factory _PanelResult.success(String message, String detail) {
+    return _PanelResult._(true, message, detail);
   }
 
-  factory _TestResult.error(String message, String detail) {
-    return _TestResult._(false, message, detail);
+  factory _PanelResult.error(String message, String detail) {
+    return _PanelResult._(false, message, detail);
   }
 
   final bool success;

@@ -1,21 +1,38 @@
-import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'dart:io';
 
+import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:image_picker/image_picker.dart';
+
+import '../models/video_task.dart';
+import '../services/go_core_bridge.dart';
+import '../services/task_store.dart';
 import '../theme/app_theme.dart';
 
 enum CreationMode { textToVideo, imageToVideo }
 
 class CreateWorkspace extends StatefulWidget {
-  const CreateWorkspace({this.onOpenSettings, super.key});
+  const CreateWorkspace({this.onOpenSettings, this.onOpenTasks, super.key});
 
   static const routeName = '/';
 
   final VoidCallback? onOpenSettings;
+  final VoidCallback? onOpenTasks;
 
   @override
   State<CreateWorkspace> createState() => _CreateWorkspaceState();
 }
 
 class _CreateWorkspaceState extends State<CreateWorkspace> {
+  static const _baseUrlKey = 'wf_base_url';
+  static const _apiKeyKey = 'wf_api_key';
+  static const _modelKey = 'wf_selected_model';
+
+  final _storage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
+  final _imagePicker = ImagePicker();
   final _promptController = TextEditingController();
   final _modelController = TextEditingController(text: 't2v-default-model');
   CreationMode _mode = CreationMode.textToVideo;
@@ -23,12 +40,129 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
   String _ratio = '16:9';
   double _motion = 0.5;
   bool _sheetOpen = false;
+  bool _submitting = false;
+  XFile? _selectedImage;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDefaultModel();
+  }
 
   @override
   void dispose() {
     _promptController.dispose();
     _modelController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadDefaultModel() async {
+    final model = await _storage.read(key: _modelKey);
+    if (!mounted || model == null || model.isEmpty) return;
+    setState(() => _modelController.text = model);
+  }
+
+  Future<void> _pickImage() async {
+    final image = await _imagePicker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1600,
+      imageQuality: 88,
+    );
+    if (image == null || !mounted) return;
+    setState(() => _selectedImage = image);
+  }
+
+  Future<void> _startWeaving() async {
+    if (_submitting) return;
+
+    final baseUrl = (await _storage.read(key: _baseUrlKey))?.trim() ?? '';
+    final apiKey = (await _storage.read(key: _apiKeyKey))?.trim() ?? '';
+    final model = _modelController.text.trim();
+    final prompt = _promptController.text.trim();
+
+    if (baseUrl.isEmpty || apiKey.isEmpty) {
+      setState(() => _sheetOpen = true);
+      return;
+    }
+    if (prompt.isEmpty) {
+      _showMessage('请输入提示词');
+      return;
+    }
+    if (model.isEmpty) {
+      _showMessage('请选择或输入模型');
+      return;
+    }
+    if (_mode == CreationMode.imageToVideo && _selectedImage == null) {
+      _showMessage('请先选择参考图片');
+      return;
+    }
+
+    setState(() => _submitting = true);
+
+    try {
+      final imageBase64 = _mode == CreationMode.imageToVideo
+          ? base64Encode(await File(_selectedImage!.path).readAsBytes())
+          : '';
+      final size = _sizeForRatio(_ratio);
+
+      final result = await GoCoreBridge.dispatchVideoTask(
+        baseUrl: baseUrl,
+        apiKey: apiKey,
+        model: model,
+        prompt: prompt,
+        size: size,
+        motionScale: _motion,
+        imageBase64: imageBase64,
+      );
+
+      if (!mounted) return;
+      if (!result.success) {
+        _showMessage(result.error.isEmpty ? '任务发起失败' : result.error);
+        return;
+      }
+
+      await TaskStore.instance.add(
+        VideoTask(
+          localId: DateTime.now().microsecondsSinceEpoch.toString(),
+          remoteTaskId: result.taskId,
+          status: VideoTaskStatus.processing,
+          mode: _mode == CreationMode.textToVideo
+              ? VideoTaskMode.textToVideo
+              : VideoTaskMode.imageToVideo,
+          prompt: prompt,
+          model: model,
+          aspectRatio: _ratio,
+          size: size,
+          motionScale: _motion,
+          createdAt: DateTime.now(),
+          imagePath: _selectedImage?.path ?? '',
+        ),
+      );
+
+      _showMessage('任务已提交：${result.taskId}');
+      widget.onOpenTasks?.call();
+    } catch (error) {
+      if (!mounted) return;
+      _showMessage('任务发起失败：$error');
+    } finally {
+      if (mounted) {
+        setState(() => _submitting = false);
+      }
+    }
+  }
+
+  String _sizeForRatio(String ratio) {
+    return switch (ratio) {
+      '9:16' => '576x1024',
+      '1:1' => '768x768',
+      _ => '1024x576',
+    };
+  }
+
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 
   @override
@@ -38,8 +172,8 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
       bottomAction: Padding(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
         child: _GradientButton(
-          label: '开始织影',
-          onTap: () => setState(() => _sheetOpen = true),
+          label: _submitting ? '提交中...' : '开始织影',
+          onTap: _submitting ? null : _startWeaving,
         ),
       ),
       overlays: [
@@ -63,7 +197,9 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
           _PromptCard(
             mode: _mode,
             controller: _promptController,
+            selectedImagePath: _selectedImage?.path,
             onChanged: (_) => setState(() {}),
+            onPickImage: _pickImage,
           ),
           const SizedBox(height: 12),
           _AdvancedToggle(
@@ -209,12 +345,16 @@ class _PromptCard extends StatelessWidget {
   const _PromptCard({
     required this.mode,
     required this.controller,
+    required this.selectedImagePath,
     required this.onChanged,
+    required this.onPickImage,
   });
 
   final CreationMode mode;
   final TextEditingController controller;
+  final String? selectedImagePath;
   final ValueChanged<String> onChanged;
+  final VoidCallback onPickImage;
 
   @override
   Widget build(BuildContext context) {
@@ -258,33 +398,76 @@ class _PromptCard extends StatelessWidget {
                 ),
               ],
             )
-          : Container(
-              height: 120,
-              decoration: BoxDecoration(
-                borderRadius: AppRadii.inputRadius,
-                border: Border.all(
-                  color: AppColors.border,
-                  width: 2,
-                  style: BorderStyle.solid,
+          : InkWell(
+              borderRadius: AppRadii.inputRadius,
+              onTap: onPickImage,
+              child: Container(
+                height: 140,
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
+                  borderRadius: AppRadii.inputRadius,
+                  border: Border.all(
+                    color: AppColors.border,
+                    width: 2,
+                    style: BorderStyle.solid,
+                  ),
                 ),
-              ),
-              child: const Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircleAvatar(
-                    radius: 20,
-                    backgroundColor: Color(0x1F3B82F6),
-                    child: Icon(Icons.upload_rounded,
-                        color: AppColors.secondaryAccent),
-                  ),
-                  SizedBox(height: 10),
-                  Text('+ 选择参考图片', style: TextStyle(color: AppColors.muted)),
-                  SizedBox(height: 4),
-                  Text(
-                    '支持 JPG / PNG，最大 10MB',
-                    style: TextStyle(color: AppColors.muted, fontSize: 11),
-                  ),
-                ],
+                child: selectedImagePath == null
+                    ? const Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          CircleAvatar(
+                            radius: 20,
+                            backgroundColor: Color(0x1F3B82F6),
+                            child: Icon(
+                              Icons.upload_rounded,
+                              color: AppColors.secondaryAccent,
+                            ),
+                          ),
+                          SizedBox(height: 10),
+                          Text(
+                            '+ 选择参考图片',
+                            style: TextStyle(color: AppColors.muted),
+                          ),
+                          SizedBox(height: 4),
+                          Text(
+                            '支持 JPG / PNG，图片会在本地转为 Base64',
+                            style: TextStyle(
+                              color: AppColors.muted,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      )
+                    : Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          Image.file(
+                            File(selectedImagePath!),
+                            fit: BoxFit.cover,
+                          ),
+                          Positioned(
+                            right: 8,
+                            bottom: 8,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.55),
+                                borderRadius: BorderRadius.circular(18),
+                              ),
+                              child: const Padding(
+                                padding: EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 5,
+                                ),
+                                child: Text(
+                                  '更换图片',
+                                  style: TextStyle(fontSize: 11),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
               ),
             ),
     );
@@ -484,7 +667,7 @@ class _GradientButton extends StatelessWidget {
   const _GradientButton({required this.label, required this.onTap});
 
   final String label;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {

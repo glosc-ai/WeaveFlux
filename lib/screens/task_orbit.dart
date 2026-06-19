@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../models/video_task.dart';
+import '../services/task_store.dart';
 import '../theme/app_theme.dart';
 import 'create_workspace.dart';
 
@@ -13,68 +15,14 @@ class TaskOrbit extends StatefulWidget {
 }
 
 class _TaskOrbitState extends State<TaskOrbit> {
-  final List<_TaskItem> _tasks = [
-    const _TaskItem(
-      status: _TaskStatus.processing,
-      title: '赛博朋克\n东京夜景',
-      prompt: '一段赛博朋克东京街头的航拍镜头，霓虹灯在雨中闪烁...',
-      model: 'kling-v2',
-      ratio: '16:9',
-      time: '2 分钟前',
-    ),
-    const _TaskItem(
-      status: _TaskStatus.failed,
-      title: '极光下的\n雪山延时',
-      prompt: '4K time-lapse of aurora borealis over snow-capped mountains...',
-      model: 'kling-v2',
-      ratio: '9:16',
-      time: '12 分钟前',
-      errorCode: 'HTTP 401 Unauthorized',
-      errorBody:
-          '{\n  "error": {\n    "code": "invalid_api_key",\n    "message": "The API key provided is not valid",\n    "type": "authentication_error"\n  }\n}',
-    ),
-    const _TaskItem(
-      status: _TaskStatus.completed,
-      title: '水墨山水\n云雾缭绕',
-      prompt: '水墨风格山水画动态视频，云雾缭绕...',
-      model: 't2v-default',
-      ratio: '1:1',
-      time: '1 小时前',
-    ),
-    const _TaskItem(
-      status: _TaskStatus.processing,
-      title: '未来城市\n概念设计',
-      prompt:
-          'Futuristic city concept art, flying vehicles, holographic ads...',
-      model: 'kling-v2',
-      ratio: '16:9',
-      time: '刚刚',
-    ),
-  ];
+  final Set<String> _expandedTaskIds = <String>{};
 
-  void _toggleExpanded(int index) {
-    if (_tasks[index].status != _TaskStatus.failed) return;
+  void _toggleExpanded(VideoTask task) {
+    if (task.status != VideoTaskStatus.failed) return;
     setState(() {
-      _tasks[index] = _tasks[index].copyWith(
-        expanded: !_tasks[index].expanded,
-      );
-    });
-  }
-
-  void _retry(int index) {
-    setState(() {
-      _tasks[index] = _tasks[index].copyWith(
-        status: _TaskStatus.processing,
-        expanded: false,
-        time: '刚刚',
-      );
-    });
-
-    Future<void>.delayed(const Duration(seconds: 3), () {
-      if (!mounted) return;
-      setState(() {
-        _tasks[index] = _tasks[index].copyWith(status: _TaskStatus.completed);
-      });
+      if (!_expandedTaskIds.add(task.localId)) {
+        _expandedTaskIds.remove(task.localId);
+      }
     });
   }
 
@@ -83,15 +31,24 @@ class _TaskOrbitState extends State<TaskOrbit> {
     return WeaveScaffold(
       activeRoute: TaskOrbit.routeName,
       header: const _TaskHeader(),
-      child: ListView.separated(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-        itemCount: _tasks.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 12),
-        itemBuilder: (context, index) {
-          return _TaskCard(
-            task: _tasks[index],
-            onTap: () => _toggleExpanded(index),
-            onRetry: () => _retry(index),
+      child: ValueListenableBuilder<List<VideoTask>>(
+        valueListenable: TaskStore.instance.tasks,
+        builder: (context, tasks, _) {
+          if (tasks.isEmpty) {
+            return const _EmptyTasks();
+          }
+          return ListView.separated(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+            itemCount: tasks.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 12),
+            itemBuilder: (context, index) {
+              final task = tasks[index];
+              return _TaskCard(
+                task: task,
+                expanded: _expandedTaskIds.contains(task.localId),
+                onTap: () => _toggleExpanded(task),
+              );
+            },
           );
         },
       ),
@@ -129,23 +86,40 @@ class _TaskHeader extends StatelessWidget {
   }
 }
 
+class _EmptyTasks extends StatelessWidget {
+  const _EmptyTasks();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
+        child: Text(
+          '暂无生成任务',
+          style: TextStyle(color: AppColors.muted, fontSize: 13),
+        ),
+      ),
+    );
+  }
+}
+
 class _TaskCard extends StatelessWidget {
   const _TaskCard({
     required this.task,
+    required this.expanded,
     required this.onTap,
-    required this.onRetry,
   });
 
-  final _TaskItem task;
+  final VideoTask task;
+  final bool expanded;
   final VoidCallback onTap;
-  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
     final leftColor = switch (task.status) {
-      _TaskStatus.processing => AppColors.secondaryAccent,
-      _TaskStatus.failed => AppColors.danger,
-      _TaskStatus.completed => AppColors.primaryAccent,
+      VideoTaskStatus.processing => AppColors.secondaryAccent,
+      VideoTaskStatus.failed => AppColors.danger,
+      VideoTaskStatus.completed => AppColors.primaryAccent,
     };
 
     return InkWell(
@@ -157,7 +131,7 @@ class _TaskCard extends StatelessWidget {
           color: AppColors.surface,
           borderRadius: AppRadii.cardRadius,
           border: Border.all(
-            color: task.status == _TaskStatus.failed
+            color: task.status == VideoTaskStatus.failed
                 ? AppColors.danger.withValues(alpha: 0.25)
                 : AppColors.border,
           ),
@@ -192,7 +166,12 @@ class _TaskCard extends StatelessWidget {
                             Wrap(
                               spacing: 10,
                               runSpacing: 2,
-                              children: [task.model, task.ratio, task.time]
+                              children: [
+                                task.model,
+                                task.aspectRatio,
+                                task.size,
+                                _relativeTime(task.createdAt),
+                              ]
                                   .map(
                                     (text) => Text(
                                       text,
@@ -204,6 +183,17 @@ class _TaskCard extends StatelessWidget {
                                   )
                                   .toList(),
                             ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Task ID: ${task.remoteTaskId}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: AppColors.muted,
+                                fontFamily: 'monospace',
+                                fontSize: 10,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -211,7 +201,7 @@ class _TaskCard extends StatelessWidget {
                       _StatusIndicator(status: task.status),
                     ],
                   ),
-                  if (task.expanded) _ErrorDetail(task: task, onRetry: onRetry),
+                  if (expanded) _ErrorDetail(task: task),
                 ],
               ),
             ),
@@ -220,12 +210,20 @@ class _TaskCard extends StatelessWidget {
       ),
     );
   }
+
+  String _relativeTime(DateTime createdAt) {
+    final diff = DateTime.now().difference(createdAt);
+    if (diff.inMinutes < 1) return '刚刚';
+    if (diff.inHours < 1) return '${diff.inMinutes} 分钟前';
+    if (diff.inDays < 1) return '${diff.inHours} 小时前';
+    return '${diff.inDays} 天前';
+  }
 }
 
 class _Thumb extends StatelessWidget {
   const _Thumb({required this.task});
 
-  final _TaskItem task;
+  final VideoTask task;
 
   @override
   Widget build(BuildContext context) {
@@ -237,20 +235,20 @@ class _Thumb extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.04),
         borderRadius: AppRadii.inputRadius,
-        gradient: task.status == _TaskStatus.completed
+        gradient: task.status == VideoTaskStatus.completed
             ? const LinearGradient(
                 colors: [Color(0xFF1A1A2E), Color(0xFF16213E)],
               )
             : null,
       ),
-      child: task.status == _TaskStatus.completed
+      child: task.status == VideoTaskStatus.completed
           ? const Icon(
               Icons.check_rounded,
               color: AppColors.primaryAccent,
               size: 18,
             )
           : Text(
-              task.title,
+              task.mode == VideoTaskMode.imageToVideo ? 'I2V\n生成中' : 'T2V\n生成中',
               textAlign: TextAlign.center,
               style: const TextStyle(
                 color: AppColors.muted,
@@ -265,7 +263,7 @@ class _Thumb extends StatelessWidget {
 class _StatusIndicator extends StatelessWidget {
   const _StatusIndicator({required this.status});
 
-  final _TaskStatus status;
+  final VideoTaskStatus status;
 
   @override
   Widget build(BuildContext context) {
@@ -275,7 +273,7 @@ class _StatusIndicator extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           switch (status) {
-            _TaskStatus.processing => const SizedBox(
+            VideoTaskStatus.processing => const SizedBox(
                 width: 28,
                 height: 28,
                 child: CircularProgressIndicator(
@@ -284,12 +282,12 @@ class _StatusIndicator extends StatelessWidget {
                   backgroundColor: AppColors.border,
                 ),
               ),
-            _TaskStatus.failed => const Icon(
+            VideoTaskStatus.failed => const Icon(
                 Icons.error_outline_rounded,
                 color: AppColors.danger,
                 size: 24,
               ),
-            _TaskStatus.completed => const Icon(
+            VideoTaskStatus.completed => const Icon(
                 Icons.check_rounded,
                 color: AppColors.primaryAccent,
                 size: 20,
@@ -298,16 +296,16 @@ class _StatusIndicator extends StatelessWidget {
           const SizedBox(height: 4),
           Text(
             switch (status) {
-              _TaskStatus.processing => 'Go 核心\n轮询中',
-              _TaskStatus.failed => '生成失败',
-              _TaskStatus.completed => '已完成',
+              VideoTaskStatus.processing => 'Go 核心\n轮询中',
+              VideoTaskStatus.failed => '生成失败',
+              VideoTaskStatus.completed => '已完成',
             },
             textAlign: TextAlign.center,
             style: TextStyle(
               color: switch (status) {
-                _TaskStatus.processing => AppColors.secondaryAccent,
-                _TaskStatus.failed => AppColors.danger,
-                _TaskStatus.completed => AppColors.primaryAccent,
+                VideoTaskStatus.processing => AppColors.secondaryAccent,
+                VideoTaskStatus.failed => AppColors.danger,
+                VideoTaskStatus.completed => AppColors.primaryAccent,
               },
               fontSize: 10,
               height: 1.3,
@@ -320,96 +318,34 @@ class _StatusIndicator extends StatelessWidget {
 }
 
 class _ErrorDetail extends StatelessWidget {
-  const _ErrorDetail({required this.task, required this.onRetry});
+  const _ErrorDetail({required this.task});
 
-  final _TaskItem task;
-  final VoidCallback onRetry;
+  final VideoTask task;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(top: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: AppColors.danger.withValues(alpha: 0.08),
-              borderRadius: AppRadii.inputRadius,
-              border: Border.all(
-                color: AppColors.danger.withValues(alpha: 0.2),
-              ),
-            ),
-            child: Text(
-              '${task.errorCode}\n${task.errorBody}',
-              style: const TextStyle(
-                color: AppColors.danger,
-                fontFamily: 'monospace',
-                fontSize: 12,
-                height: 1.6,
-              ),
-            ),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.danger.withValues(alpha: 0.08),
+          borderRadius: AppRadii.inputRadius,
+          border: Border.all(
+            color: AppColors.danger.withValues(alpha: 0.2),
           ),
-          const SizedBox(height: 10),
-          OutlinedButton.icon(
-            onPressed: onRetry,
-            style: OutlinedButton.styleFrom(
-              foregroundColor: AppColors.danger,
-              side: const BorderSide(color: AppColors.danger),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            ),
-            icon: const Icon(Icons.refresh_rounded, size: 14),
-            label: const Text('重试'),
+        ),
+        child: Text(
+          task.errorMessage,
+          style: const TextStyle(
+            color: AppColors.danger,
+            fontFamily: 'monospace',
+            fontSize: 12,
+            height: 1.6,
           ),
-        ],
+        ),
       ),
-    );
-  }
-}
-
-enum _TaskStatus { processing, failed, completed }
-
-class _TaskItem {
-  const _TaskItem({
-    required this.status,
-    required this.title,
-    required this.prompt,
-    required this.model,
-    required this.ratio,
-    required this.time,
-    this.errorCode = '',
-    this.errorBody = '',
-    this.expanded = false,
-  });
-
-  final _TaskStatus status;
-  final String title;
-  final String prompt;
-  final String model;
-  final String ratio;
-  final String time;
-  final String errorCode;
-  final String errorBody;
-  final bool expanded;
-
-  _TaskItem copyWith({
-    _TaskStatus? status,
-    String? time,
-    bool? expanded,
-  }) {
-    return _TaskItem(
-      status: status ?? this.status,
-      title: title,
-      prompt: prompt,
-      model: model,
-      ratio: ratio,
-      time: time ?? this.time,
-      errorCode: errorCode,
-      errorBody: errorBody,
-      expanded: expanded ?? this.expanded,
     );
   }
 }

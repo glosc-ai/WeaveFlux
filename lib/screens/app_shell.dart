@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import '../services/task_store.dart';
 import 'create_workspace.dart';
 import 'private_gallery.dart';
 import 'settings_panel.dart';
@@ -27,6 +28,16 @@ class _AppShellState extends State<AppShell> {
     setState(() => _currentIndex = 3);
   }
 
+  void _openTasks() {
+    setState(() => _currentIndex = 1);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    TaskStore.instance.load();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -38,7 +49,10 @@ class _AppShellState extends State<AppShell> {
               child: IndexedStack(
                 index: _currentIndex,
                 children: [
-                  CreateWorkspace(onOpenSettings: _openSettings),
+                  CreateWorkspace(
+                    onOpenSettings: _openSettings,
+                    onOpenTasks: _openTasks,
+                  ),
                   _pages[1],
                   _pages[2],
                   _pages[3],

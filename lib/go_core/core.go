@@ -1,0 +1,599 @@
+package weavefluxcore
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type connectionResult struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+}
+
+type modelsResult struct {
+	Success bool     `json:"success"`
+	Models  []string `json:"models"`
+	Error   string   `json:"error"`
+	Debug   string   `json:"debug"`
+}
+
+type dispatchResult struct {
+	TaskID string `json:"task_id"`
+	Error  string `json:"error"`
+}
+
+type videoGenerationRequest struct {
+	Model       string  `json:"model"`
+	Prompt      string  `json:"prompt"`
+	Size        string  `json:"size"`
+	MotionScale float64 `json:"motion_scale,omitempty"`
+	Image       string  `json:"image,omitempty"`
+}
+
+type chatCompletionRequest struct {
+	Model       string        `json:"model"`
+	Messages    []chatMessage `json:"messages"`
+	Size        string        `json:"size,omitempty"`
+	MotionScale float64       `json:"motion_scale,omitempty"`
+}
+
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content any    `json:"content"`
+}
+
+type multimodalContent struct {
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *imageURL `json:"image_url,omitempty"`
+}
+
+type imageURL struct {
+	URL string `json:"url"`
+}
+
+type dispatchAttempt struct {
+	Path string
+	Body any
+}
+
+type modelsResponse struct {
+	Data []modelItem `json:"data"`
+}
+
+type modelItem struct {
+	ID         string          `json:"id"`
+	Categories json.RawMessage `json:"categories"`
+}
+
+type modelCollection struct {
+	Models               []string
+	Total                int
+	Kept                 int
+	RejectedTextFamily   int
+	RejectedNotVideoLike int
+	Duplicate            int
+	EmptyID              int
+	Samples              []string
+}
+
+// TestConnection checks the user-provided OpenAI-compatible /models endpoint.
+//
+// gomobile bind has limited support for multiple non-error return values, so
+// this exported boundary returns a JSON string and lets Android/Dart decode it.
+func TestConnection(baseURL, apiKey string) string {
+	resp, errMsg := requestModels(baseURL, apiKey, 20*time.Second)
+	if errMsg != "" {
+		return encodeConnectionResult(false, errMsg)
+	}
+	resp.Body.Close()
+	return encodeConnectionResult(true, "")
+}
+
+// FetchModels returns the available OpenAI-compatible model IDs as JSON.
+func FetchModels(baseURL, apiKey string) string {
+	collection, errMsg := fetchModelIDs(baseURL, apiKey)
+	if errMsg != "" {
+		return encodeModelsResult(false, nil, errMsg, "")
+	}
+	if len(collection.Models) == 0 {
+		return encodeModelsResult(false, nil, "No video-capable models returned by /models", collection.Debug())
+	}
+	return encodeModelsResult(true, collection.Models, "", "plain request: "+collection.Debug())
+}
+
+// DispatchVideoTask sends a T2V/I2V video generation request.
+func DispatchVideoTask(baseURL, apiKey, model, prompt, size, motionScale, imageBase64 string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	apiKey = strings.TrimSpace(apiKey)
+	model = strings.TrimSpace(model)
+	prompt = strings.TrimSpace(prompt)
+	size = strings.TrimSpace(size)
+	imageBase64 = strings.TrimSpace(imageBase64)
+
+	if baseURL == "" {
+		return encodeDispatchResult("", "Base URL is empty")
+	}
+	if apiKey == "" {
+		return encodeDispatchResult("", "API Key is empty")
+	}
+	if model == "" {
+		return encodeDispatchResult("", "Model is empty")
+	}
+	if prompt == "" {
+		return encodeDispatchResult("", "Prompt is empty")
+	}
+	if size == "" {
+		return encodeDispatchResult("", "Size is empty")
+	}
+
+	motion, err := strconv.ParseFloat(strings.TrimSpace(motionScale), 64)
+	if err != nil {
+		motion = 0
+	}
+
+	attempts := []dispatchAttempt{
+		{
+			Path: "/videos/generations",
+			Body: videoGenerationRequest{
+				Model:       model,
+				Prompt:      prompt,
+				Size:        size,
+				MotionScale: motion,
+				Image:       imageBase64,
+			},
+		},
+		{
+			Path: "/chat/completions",
+			Body: buildChatCompletionRequest(model, prompt, size, motion, imageBase64),
+		},
+	}
+
+	errors := make([]string, 0, len(attempts))
+	for _, attempt := range attempts {
+		taskID, unsupported, errMsg := dispatchToEndpoint(baseURL, apiKey, attempt)
+		if errMsg == "" {
+			return encodeDispatchResult(taskID, "")
+		}
+		errors = append(errors, attempt.Path+": "+errMsg)
+		if !unsupported {
+			return encodeDispatchResult("", errMsg)
+		}
+	}
+
+	return encodeDispatchResult("", strings.Join(errors, "; "))
+}
+
+func fetchModelIDs(baseURL, apiKey string) (modelCollection, string) {
+	resp, errMsg := requestModelsWithRetry(baseURL, apiKey, 180*time.Second, 2)
+	if errMsg != "" {
+		return modelCollection{}, errMsg
+	}
+	defer resp.Body.Close()
+
+	var payload modelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return modelCollection{}, fmt.Sprintf("Invalid /models response: %v", err)
+	}
+
+	return collectVideoModelIDs(payload.Data), ""
+}
+
+func extractTaskID(data []byte) string {
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return extractTaskIDFromText(string(data))
+	}
+	if taskID := findTaskID(payload); taskID != "" {
+		return taskID
+	}
+	return extractTaskIDFromText(string(data))
+}
+
+func findTaskID(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"task_id", "taskId", "taskID", "id"} {
+			if value, ok := typed[key].(string); ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+		for _, item := range typed {
+			if taskID := findTaskID(item); taskID != "" {
+				return taskID
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if taskID := findTaskID(item); taskID != "" {
+				return taskID
+			}
+		}
+	case string:
+		return extractTaskIDFromText(typed)
+	}
+	return ""
+}
+
+func extractTaskIDFromText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var nested any
+	if err := json.Unmarshal([]byte(value), &nested); err == nil {
+		if taskID := findTaskID(nested); taskID != "" {
+			return taskID
+		}
+	}
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)"(?:task_id|taskId|taskID|id)"\s*:\s*"([^"]+)"`),
+		regexp.MustCompile(`(?i)(?:task_id|taskId|taskID)\s*[:=]\s*([A-Za-z0-9._:-]+)`),
+	}
+	for _, pattern := range patterns {
+		matches := pattern.FindStringSubmatch(value)
+		if len(matches) > 1 && strings.TrimSpace(matches[1]) != "" {
+			return strings.TrimSpace(matches[1])
+		}
+	}
+	return ""
+}
+
+func dispatchToEndpoint(baseURL, apiKey string, attempt dispatchAttempt) (string, bool, string) {
+	body, err := json.Marshal(attempt.Body)
+	if err != nil {
+		return "", false, fmt.Sprintf("Failed to encode request: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, baseURL+attempt.Path, bytes.NewReader(body))
+	if err != nil {
+		return "", false, fmt.Sprintf("Invalid request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", false, fmt.Sprintf("Network error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message := strings.TrimSpace(string(respBody))
+		if message == "" {
+			message = http.StatusText(resp.StatusCode)
+		}
+		errMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, message)
+		return "", isUnsupportedEndpoint(resp.StatusCode, message), errMsg
+	}
+
+	taskID := extractTaskID(respBody)
+	if attempt.Path == "/chat/completions" {
+		taskID = extractChatTaskID(respBody)
+	}
+	if taskID == "" {
+		return "", false, "No task_id returned by " + attempt.Path
+	}
+	return taskID, false, ""
+}
+
+func extractChatTaskID(data []byte) string {
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return extractTaskIDFromText(string(data))
+	}
+	choices, ok := payload["choices"].([]any)
+	if !ok {
+		return ""
+	}
+	for _, choice := range choices {
+		choiceMap, ok := choice.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, messageKey := range []string{"message", "delta"} {
+			message, ok := choiceMap[messageKey].(map[string]any)
+			if !ok {
+				continue
+			}
+			content, ok := message["content"].(string)
+			if ok {
+				if taskID := extractTaskIDFromText(content); taskID != "" {
+					return taskID
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func buildChatCompletionRequest(model, prompt, size string, motion float64, imageBase64 string) chatCompletionRequest {
+	text := fmt.Sprintf("%s\n\nVideo generation parameters:\nsize: %s\nmotion_scale: %.3f", prompt, size, motion)
+	message := chatMessage{Role: "user", Content: text}
+	if imageBase64 != "" {
+		message.Content = []multimodalContent{
+			{Type: "text", Text: text},
+			{Type: "image_url", ImageURL: &imageURL{URL: "data:image/jpeg;base64," + imageBase64}},
+		}
+	}
+	return chatCompletionRequest{
+		Model:       model,
+		Messages:    []chatMessage{message},
+		Size:        size,
+		MotionScale: motion,
+	}
+}
+
+func isUnsupportedEndpoint(statusCode int, body string) bool {
+	if statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed {
+		return true
+	}
+	body = strings.ToLower(body)
+	return strings.Contains(body, "invalid url") ||
+		strings.Contains(body, "not found") ||
+		strings.Contains(body, "unsupported endpoint")
+}
+
+func collectVideoModelIDs(items []modelItem) modelCollection {
+	collection := modelCollection{
+		Models:  make([]string, 0, len(items)),
+		Total:   len(items),
+		Samples: make([]string, 0, 8),
+	}
+	models := make([]string, 0, len(items))
+	seen := make(map[string]bool, len(items))
+	for _, item := range items {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			collection.EmptyID++
+			continue
+		}
+		if seen[id] {
+			collection.Duplicate++
+			continue
+		}
+		hasVideo := hasVideoCategory(item.Categories)
+		likelyVideo := isLikelyVideoModel(id)
+		if isLikelyNonVideoModel(id) && !(hasVideo && likelyVideo) {
+			collection.RejectedTextFamily++
+			collection.addSample("text-family", id, item.Categories)
+			continue
+		}
+		if !hasVideo && !likelyVideo {
+			collection.RejectedNotVideoLike++
+			collection.addSample("not-video-like", id, item.Categories)
+			continue
+		}
+		seen[id] = true
+		models = append(models, id)
+	}
+	collection.Models = models
+	collection.Kept = len(models)
+	return collection
+}
+
+func (c *modelCollection) addSample(reason, id string, raw json.RawMessage) {
+	if len(c.Samples) >= 8 {
+		return
+	}
+	categories := strings.TrimSpace(string(raw))
+	if len(categories) > 80 {
+		categories = categories[:80] + "..."
+	}
+	c.Samples = append(c.Samples, fmt.Sprintf("%s: %s categories=%s", reason, id, categories))
+}
+
+func (c modelCollection) Debug() string {
+	parts := []string{
+		fmt.Sprintf("total=%d", c.Total),
+		fmt.Sprintf("kept=%d", c.Kept),
+		fmt.Sprintf("rejected_text_family=%d", c.RejectedTextFamily),
+		fmt.Sprintf("rejected_not_video_like=%d", c.RejectedNotVideoLike),
+		fmt.Sprintf("duplicate=%d", c.Duplicate),
+		fmt.Sprintf("empty_id=%d", c.EmptyID),
+	}
+	if len(c.Samples) > 0 {
+		parts = append(parts, "samples=["+strings.Join(c.Samples, " | ")+"]")
+	}
+	return strings.Join(parts, "; ")
+}
+
+func hasVideoCategory(raw json.RawMessage) bool {
+	for _, token := range categoryTokens(raw) {
+		if isVideoToken(token) {
+			return true
+		}
+	}
+	return false
+}
+
+func categoryTokens(raw json.RawMessage) []string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return splitCategoryText(string(raw))
+	}
+
+	tokens := make([]string, 0)
+	var walk func(any)
+	walk = func(v any) {
+		switch typed := v.(type) {
+		case string:
+			tokens = append(tokens, splitCategoryText(typed)...)
+		case []any:
+			for _, item := range typed {
+				walk(item)
+			}
+		case map[string]any:
+			for key, val := range typed {
+				if enabled, ok := val.(bool); ok && enabled {
+					tokens = append(tokens, splitCategoryText(key)...)
+					continue
+				}
+				walk(val)
+			}
+		}
+	}
+	walk(value)
+	return tokens
+}
+
+func splitCategoryText(value string) []string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.Trim(value, `"'[]{} `)
+	if value == "" {
+		return nil
+	}
+
+	separators := []string{",", ";", "|", "/", "\\", " "}
+	parts := []string{value}
+	for _, separator := range separators {
+		next := make([]string, 0, len(parts))
+		for _, part := range parts {
+			next = append(next, strings.Split(part, separator)...)
+		}
+		parts = next
+	}
+
+	tokens := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.Trim(part, `"'[]{}() `)
+		if part != "" {
+			tokens = append(tokens, part)
+		}
+	}
+	return tokens
+}
+
+func isVideoToken(token string) bool {
+	switch strings.ToLower(strings.TrimSpace(token)) {
+	case "video", "videos", "video-generation", "video_generation", "text-to-video", "image-to-video", "t2v", "i2v":
+		return true
+	default:
+		return false
+	}
+}
+
+func isLikelyVideoModel(id string) bool {
+	value := strings.ToLower(id)
+	keywords := []string{
+		"video", "t2v", "i2v", "kling", "veo", "vidu", "wan", "hailuo",
+		"minimax", "runway", "gen-2", "gen-3", "gen-4", "luma", "ray",
+		"dream-machine", "pika", "pixverse", "seedance", "sora", "cogvideo",
+		"stable-video", "svd", "hunyuanvideo", "skyreels", "ltx-video",
+	}
+	for _, keyword := range keywords {
+		if strings.Contains(value, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func isLikelyNonVideoModel(id string) bool {
+	value := strings.ToLower(id)
+	keywords := []string{
+		"gpt", "claude", "deepseek", "qwen", "llama", "gemini", "o1", "o3",
+		"o4", "mistral", "mixtral", "grok", "glm", "yi-", "chat", "rerank",
+		"embedding", "embed", "whisper", "tts", "text-", "coder", "reason",
+		"search", "moderation", "vision", "vl", "ocr", "flux", "sdxl",
+		"stable-diffusion", "midjourney", "dall-e", "imagen",
+	}
+	for _, keyword := range keywords {
+		if strings.Contains(value, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func requestModelsWithRetry(baseURL, apiKey string, timeout time.Duration, retries int) (*http.Response, string) {
+	var lastErr string
+	for attempt := 0; attempt <= retries; attempt++ {
+		resp, errMsg := requestModels(baseURL, apiKey, timeout)
+		if errMsg == "" {
+			return resp, ""
+		}
+		lastErr = errMsg
+		if attempt < retries {
+			time.Sleep(time.Duration(attempt+1) * 700 * time.Millisecond)
+		}
+	}
+	return nil, lastErr
+}
+
+func requestModels(baseURL, apiKey string, timeout time.Duration) (*http.Response, string) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	apiKey = strings.TrimSpace(apiKey)
+
+	if baseURL == "" {
+		return nil, "Base URL is empty"
+	}
+	if apiKey == "" {
+		return nil, "API Key is empty"
+	}
+
+	modelsURL := baseURL + "/models"
+	req, err := http.NewRequest(http.MethodGet, modelsURL, nil)
+	if err != nil {
+		return nil, fmt.Sprintf("Invalid request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Sprintf("Network error: %v", err)
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		return resp, ""
+	}
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+	resp.Body.Close()
+	message := strings.TrimSpace(string(body))
+	if message == "" {
+		message = http.StatusText(resp.StatusCode)
+	}
+	return nil, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, message)
+}
+
+func encodeConnectionResult(success bool, errMsg string) string {
+	data, err := json.Marshal(connectionResult{Success: success, Error: errMsg})
+	if err != nil {
+		return `{"success":false,"error":"Failed to encode connection result"}`
+	}
+	return string(data)
+}
+
+func encodeModelsResult(success bool, models []string, errMsg, debug string) string {
+	if models == nil {
+		models = []string{}
+	}
+	data, err := json.Marshal(modelsResult{Success: success, Models: models, Error: errMsg, Debug: debug})
+	if err != nil {
+		return `{"success":false,"models":[],"error":"Failed to encode models result"}`
+	}
+	return string(data)
+}
+
+func encodeDispatchResult(taskID, errMsg string) string {
+	data, err := json.Marshal(dispatchResult{TaskID: taskID, Error: errMsg})
+	if err != nil {
+		return `{"task_id":"","error":"Failed to encode dispatch result"}`
+	}
+	return string(data)
+}
