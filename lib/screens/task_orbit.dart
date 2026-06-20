@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:video_player/video_player.dart';
 
 import '../models/video_task.dart';
 import '../services/task_store.dart';
@@ -47,6 +48,7 @@ class _TaskOrbitState extends State<TaskOrbit> {
                 task: task,
                 expanded: _expandedTaskIds.contains(task.localId),
                 onTap: () => _toggleExpanded(task),
+                onRetry: () => TaskStore.instance.retryPolling(task),
               );
             },
           );
@@ -108,11 +110,13 @@ class _TaskCard extends StatelessWidget {
     required this.task,
     required this.expanded,
     required this.onTap,
+    required this.onRetry,
   });
 
   final VideoTask task;
   final bool expanded;
   final VoidCallback onTap;
+  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -201,7 +205,7 @@ class _TaskCard extends StatelessWidget {
                       _StatusIndicator(status: task.status),
                     ],
                   ),
-                  if (expanded) _ErrorDetail(task: task),
+                  if (expanded) _ErrorDetail(task: task, onRetry: onRetry),
                 ],
               ),
             ),
@@ -242,11 +246,13 @@ class _Thumb extends StatelessWidget {
             : null,
       ),
       child: task.status == VideoTaskStatus.completed
-          ? const Icon(
-              Icons.check_rounded,
-              color: AppColors.primaryAccent,
-              size: 18,
-            )
+          ? task.resultUrl.isEmpty
+              ? const Icon(
+                  Icons.check_rounded,
+                  color: AppColors.primaryAccent,
+                  size: 18,
+                )
+              : _CompletedPreview(url: task.resultUrl)
           : Text(
               task.mode == VideoTaskMode.imageToVideo ? 'I2V\n生成中' : 'T2V\n生成中',
               textAlign: TextAlign.center,
@@ -317,10 +323,105 @@ class _StatusIndicator extends StatelessWidget {
   }
 }
 
+class _CompletedPreview extends StatefulWidget {
+  const _CompletedPreview({required this.url});
+
+  final String url;
+
+  @override
+  State<_CompletedPreview> createState() => _CompletedPreviewState();
+}
+
+class _CompletedPreviewState extends State<_CompletedPreview> {
+  VideoPlayerController? _controller;
+  bool _ready = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initPreview();
+  }
+
+  @override
+  void didUpdateWidget(covariant _CompletedPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      _controller?.dispose();
+      _controller = null;
+      _ready = false;
+      _initPreview();
+    }
+  }
+
+  Future<void> _initPreview() async {
+    final uri = Uri.tryParse(widget.url);
+    if (uri == null || !uri.hasScheme) return;
+    final controller = VideoPlayerController.networkUrl(uri);
+    _controller = controller;
+    try {
+      await controller.initialize();
+      await controller.pause();
+      if (!mounted || _controller != controller) return;
+      setState(() => _ready = true);
+    } catch (_) {
+      await controller.dispose();
+      if (!mounted || _controller != controller) return;
+      setState(() {
+        _controller = null;
+        _ready = false;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = _controller;
+    if (_ready && controller != null) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(6),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            FittedBox(
+              fit: BoxFit.cover,
+              child: SizedBox(
+                width: controller.value.size.width,
+                height: controller.value.size.height,
+                child: VideoPlayer(controller),
+              ),
+            ),
+            const Align(
+              alignment: Alignment.center,
+              child: Icon(
+                Icons.play_circle_fill_rounded,
+                color: AppColors.primaryAccent,
+                size: 22,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return const Icon(
+      Icons.check_rounded,
+      color: AppColors.primaryAccent,
+      size: 18,
+    );
+  }
+}
+
 class _ErrorDetail extends StatelessWidget {
-  const _ErrorDetail({required this.task});
+  const _ErrorDetail({required this.task, required this.onRetry});
 
   final VideoTask task;
+  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -336,14 +437,34 @@ class _ErrorDetail extends StatelessWidget {
             color: AppColors.danger.withValues(alpha: 0.2),
           ),
         ),
-        child: Text(
-          task.errorMessage,
-          style: const TextStyle(
-            color: AppColors.danger,
-            fontFamily: 'monospace',
-            fontSize: 12,
-            height: 1.6,
-          ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              task.errorMessage,
+              style: const TextStyle(
+                color: AppColors.danger,
+                fontFamily: 'monospace',
+                fontSize: 12,
+                height: 1.6,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerRight,
+              child: OutlinedButton.icon(
+                onPressed: onRetry,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.danger,
+                  side: BorderSide(
+                    color: AppColors.danger.withValues(alpha: 0.45),
+                  ),
+                ),
+                icon: const Icon(Icons.refresh_rounded, size: 16),
+                label: const Text('重试'),
+              ),
+            ),
+          ],
         ),
       ),
     );

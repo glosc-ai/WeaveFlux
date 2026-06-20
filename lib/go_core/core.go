@@ -9,8 +9,18 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// GoStatusListener is implemented by the Android host through gomobile. Go
+// invokes it from a background goroutine when a remote task reaches a terminal
+// status or times out.
+type GoStatusListener interface {
+	OnStatusChanged(status string, videoURL string, errStr string)
+}
+
+var activePollingTasks sync.Map
 
 type connectionResult struct {
 	Success bool   `json:"success"`
@@ -423,6 +433,103 @@ func QueryTask(baseURL, apiKey, taskID string) string {
 		}
 	}
 	return encodeTaskStatusResult(false, "", "", "", strings.Join(errors, "; "))
+}
+
+// StartPollingTask starts a non-blocking background poller for a single remote
+// video task. It uses the new-api task fetch route requested by the Android
+// bridge and reports terminal states through GoStatusListener.
+func StartPollingTask(baseURL, apiKey, taskID string, listener GoStatusListener) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	apiKey = strings.TrimSpace(apiKey)
+	taskID = strings.TrimSpace(taskID)
+
+	if listener == nil {
+		return
+	}
+	if baseURL == "" || apiKey == "" || taskID == "" {
+		listener.OnStatusChanged("failed", "", "Missing polling parameters")
+		return
+	}
+	if _, loaded := activePollingTasks.LoadOrStore(taskID, true); loaded {
+		return
+	}
+
+	go func() {
+		defer activePollingTasks.Delete(taskID)
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				listener.OnStatusChanged("failed", "", fmt.Sprintf("Polling panic: %v", recovered))
+			}
+		}()
+
+		ticker := time.NewTicker(7 * time.Second)
+		defer ticker.Stop()
+
+		const maxAttempts = 60
+		var lastErr string
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			status, videoURL, errMsg := queryTaskWithFallback(baseURL, apiKey, taskID)
+			if errMsg != "" {
+				lastErr = errMsg
+			} else {
+				status = normalizeRemoteStatus(status)
+				switch status {
+				case "completed":
+					listener.OnStatusChanged("success", videoURL, "")
+					return
+				case "failed":
+					listener.OnStatusChanged("failed", videoURL, "Remote task failed")
+					return
+				}
+			}
+
+			if attempt < maxAttempts {
+				<-ticker.C
+			}
+		}
+
+		if lastErr == "" {
+			lastErr = "Polling timed out"
+		} else {
+			lastErr = "Polling timed out: " + lastErr
+		}
+		listener.OnStatusChanged("failed", "", lastErr)
+	}()
+}
+
+func queryTaskWithFallback(baseURL, apiKey, taskID string) (string, string, string) {
+	paths := []string{
+		"/videos/tasks/" + taskID,
+		"/videos/generations/" + taskID,
+		"/video/generations/" + taskID,
+		"/videos/" + taskID,
+		"/videos/" + taskID + "/content",
+		"/tasks/" + taskID,
+	}
+
+	errors := make([]string, 0, len(paths))
+	for _, path := range paths {
+		status, resultURL, _, unsupported, errMsg := queryTaskEndpoint(baseURL, apiKey, path)
+		if errMsg == "" {
+			return status, resultURL, ""
+		}
+		errors = append(errors, path+": "+errMsg)
+		if !unsupported {
+			return "", "", errMsg
+		}
+	}
+	return "", "", strings.Join(errors, "; ")
+}
+
+func normalizeRemoteStatus(status string) string {
+	switch strings.TrimSpace(strings.ToLower(status)) {
+	case "completed", "succeeded", "success", "finished", "complete":
+		return "completed"
+	case "failed", "error", "cancelled", "canceled":
+		return "failed"
+	default:
+		return "processing"
+	}
 }
 
 func fetchModelIDs(baseURL, apiKey string) (modelCollection, string) {

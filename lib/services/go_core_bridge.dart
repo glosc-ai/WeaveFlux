@@ -1,17 +1,60 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 class GoCoreBridge {
   GoCoreBridge._();
 
   static const MethodChannel _channel = MethodChannel('weaveflux/go_core');
+  static Future<void> Function(NativeTaskStatusUpdate update)?
+      _taskStatusHandler;
+  static bool _methodHandlerConfigured = false;
+
+  static Future<Map<String, Object?>?> _invokeMap(
+    String method,
+    Map<String, Object?> arguments,
+  ) async {
+    try {
+      return await _channel.invokeMapMethod<String, Object?>(
+        method,
+        arguments,
+      );
+    } catch (e, stack) {
+      debugPrint('❌ [MethodChannel Error]: $e \n Stack: $stack');
+      rethrow;
+    }
+  }
+
+  static void configureTaskStatusHandler(
+    Future<void> Function(NativeTaskStatusUpdate update) handler,
+  ) {
+    _taskStatusHandler = handler;
+    if (_methodHandlerConfigured) return;
+    _methodHandlerConfigured = true;
+    _channel.setMethodCallHandler((call) async {
+      if (call.method != 'taskStatusChanged') return null;
+      final raw = call.arguments;
+      if (raw is! Map) return null;
+      final handler = _taskStatusHandler;
+      if (handler == null) return null;
+      await handler(
+        NativeTaskStatusUpdate(
+          taskId: raw['task_id'] as String? ?? '',
+          status: raw['status'] as String? ?? '',
+          videoUrl: raw['video_url'] as String? ?? '',
+          error: raw['error'] as String? ?? '',
+        ),
+      );
+      return null;
+    });
+  }
 
   static Future<ConnectionTestResult> testConnection({
     required String baseUrl,
     required String apiKey,
   }) async {
-    final raw = await _channel.invokeMapMethod<String, Object?>(
+    final raw = await _invokeMap(
       'testConnection',
       <String, Object?>{
         'baseUrl': baseUrl,
@@ -29,7 +72,7 @@ class GoCoreBridge {
     required String baseUrl,
     required String apiKey,
   }) async {
-    final raw = await _channel.invokeMapMethod<String, Object?>(
+    final raw = await _invokeMap(
       'fetchModels',
       <String, Object?>{
         'baseUrl': baseUrl,
@@ -84,7 +127,7 @@ class GoCoreBridge {
     required String apiKey,
     required Map<String, Object?> payload,
   }) async {
-    final raw = await _channel.invokeMapMethod<String, Object?>(
+    final raw = await _invokeMap(
       'dispatchVideoTask',
       <String, Object?>{
         'baseUrl': baseUrl,
@@ -107,7 +150,7 @@ class GoCoreBridge {
     required String apiKey,
     required Map<String, Object?> payload,
   }) async {
-    final raw = await _channel.invokeMapMethod<String, Object?>(
+    final raw = await _invokeMap(
       'dispatchImageTask',
       <String, Object?>{
         'baseUrl': baseUrl,
@@ -130,7 +173,7 @@ class GoCoreBridge {
     required String apiKey,
     required String taskId,
   }) async {
-    final raw = await _channel.invokeMapMethod<String, Object?>(
+    final raw = await _invokeMap(
       'queryTask',
       <String, Object?>{
         'baseUrl': baseUrl,
@@ -145,6 +188,26 @@ class GoCoreBridge {
       resultUrl: raw?['result_url'] as String? ?? '',
       resultBase64: raw?['result_b64'] as String? ?? '',
       error: raw?['error'] as String? ?? 'Unknown task status result',
+    );
+  }
+
+  static Future<ConnectionTestResult> startPollingTask({
+    required String baseUrl,
+    required String apiKey,
+    required String taskId,
+  }) async {
+    final raw = await _invokeMap(
+      'startPollingTask',
+      <String, Object?>{
+        'baseUrl': baseUrl,
+        'apiKey': apiKey,
+        'taskId': taskId,
+      },
+    );
+
+    return ConnectionTestResult(
+      success: raw?['success'] == true,
+      error: raw?['error'] as String? ?? 'Unknown polling start result',
     );
   }
 }
@@ -208,5 +271,19 @@ class TaskStatusResult {
   final String status;
   final String resultUrl;
   final String resultBase64;
+  final String error;
+}
+
+class NativeTaskStatusUpdate {
+  const NativeTaskStatusUpdate({
+    required this.taskId,
+    required this.status,
+    required this.videoUrl,
+    required this.error,
+  });
+
+  final String taskId;
+  final String status;
+  final String videoUrl;
   final String error;
 }
