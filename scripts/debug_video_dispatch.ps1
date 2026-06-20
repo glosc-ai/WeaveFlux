@@ -227,13 +227,19 @@ Write-Host ""
 Write-Host "This script prints request/response data. API Key is redacted; image Base64 is omitted in printed body."
 
 Invoke-DebugPost `
-    -Label "/videos/generations body used by Go core" `
+    -Label "/video/generations body used by Go core" `
+    -Url "$BaseUrl/video/generations" `
+    -Headers $headers `
+    -BodyObject $actualVideoBody
+
+Invoke-DebugPost `
+    -Label "/videos/generations compatibility body" `
     -Url "$BaseUrl/videos/generations" `
     -Headers $headers `
     -BodyObject $actualVideoBody
 
 Write-Host ""
-Write-Host "Printed body for /videos/generations with image redacted, if present:"
+Write-Host "Printed body for /video(s)/generations with image redacted, if present:"
 Write-Host (To-PrettyJson $videoBody)
 
 Invoke-DebugPost `
