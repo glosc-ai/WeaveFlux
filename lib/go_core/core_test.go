@@ -2,6 +2,7 @@ package weavefluxcore
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -74,6 +75,31 @@ func TestHasImageCategoryParsesStructuredCategories(t *testing.T) {
 	}
 }
 
+func TestMergeTypedModelsHonorsReturnedCategories(t *testing.T) {
+	collection := modelCollection{}
+	collection.mergeTypedModels([]modelItem{
+		{ID: "video-model", Categories: rawJSON(t, `["video"]`)},
+		{ID: "text-model", Categories: rawJSON(t, `["text"]`)},
+		{ID: "image-model", Categories: rawJSON(t, `["image"]`)},
+	}, "video")
+
+	if len(collection.VideoModels) != 1 || collection.VideoModels[0] != "video-model" {
+		t.Fatalf("got video models %v", collection.VideoModels)
+	}
+	if len(collection.Models) != 1 || collection.Models[0] != "video-model" {
+		t.Fatalf("got models %v", collection.Models)
+	}
+
+	collection.mergeTypedModels([]modelItem{
+		{ID: "video-model", Categories: rawJSON(t, `["video"]`)},
+		{ID: "image-model", Categories: rawJSON(t, `["image"]`)},
+	}, "image")
+
+	if len(collection.ImageModels) != 1 || collection.ImageModels[0] != "image-model" {
+		t.Fatalf("got image models %v", collection.ImageModels)
+	}
+}
+
 func TestExtractChatTaskIDIgnoresTopLevelCompletionID(t *testing.T) {
 	data := []byte(`{
 		"id": "chatcmpl-not-a-video-task",
@@ -101,6 +127,51 @@ func TestExtractChatTaskIDReturnsEmptyWithoutContentTask(t *testing.T) {
 
 	if got := extractChatTaskID(data); got != "" {
 		t.Fatalf("got %q, want empty task id", got)
+	}
+}
+
+func TestExtractResultURLFindsURLInsideChatContent(t *testing.T) {
+	data := []byte(`{
+		"choices": [
+			{"message": {"content": "{\"url\":\"https://example.com/out.png\"}"}}
+		]
+	}`)
+
+	if got := extractResultURL(data); got != "https://example.com/out.png" {
+		t.Fatalf("got %q, want result url", got)
+	}
+}
+
+func TestDispatchErrorPreviewMentionsBodyWhenNoResultReturned(t *testing.T) {
+	body := []byte(`{"created":123,"data":[{"revised_prompt":"ok"}]}`)
+	if preview := responsePreview(body); !strings.Contains(preview, "revised_prompt") {
+		t.Fatalf("preview did not include response body: %q", preview)
+	}
+}
+
+func TestNormalizeVideoModeMapsFlutterModesToProviderModes(t *testing.T) {
+	cases := map[string]string{
+		"promptOnly":     "ti2vid",
+		"firstFrame":     "ti2vid",
+		"extendClip":     "ti2vid",
+		"firstLastFrame": "keyframes",
+		"keyframes":      "keyframes",
+		"ti2vid":         "ti2vid",
+	}
+	for input, want := range cases {
+		if got := normalizeVideoMode(input); got != want {
+			t.Fatalf("normalizeVideoMode(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestVideoDispatchAttemptsPreferNewApiTaskRoute(t *testing.T) {
+	attempts := videoDispatchAttempts(videoGenerationRequest{}, chatCompletionRequest{})
+	if len(attempts) < 2 {
+		t.Fatalf("expected multiple attempts")
+	}
+	if attempts[0].Path != "/video/generations" {
+		t.Fatalf("first attempt = %s, want /video/generations", attempts[0].Path)
 	}
 }
 

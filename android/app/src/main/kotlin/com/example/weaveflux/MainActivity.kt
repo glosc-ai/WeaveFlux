@@ -36,14 +36,32 @@ class MainActivity : FlutterActivity() {
                     val args = listOf(
                         call.argument<String>("baseUrl").orEmpty(),
                         call.argument<String>("apiKey").orEmpty(),
-                        call.argument<String>("model").orEmpty(),
-                        call.argument<String>("prompt").orEmpty(),
-                        call.argument<String>("size").orEmpty(),
-                        call.argument<String>("motionScale").orEmpty(),
-                        call.argument<String>("imageBase64").orEmpty(),
+                        call.argument<String>("payload").orEmpty(),
                     )
                     Thread {
-                        val payload = invokeGoJsonMethod("dispatchVideoTask", args)
+                        val payload = invokeGoJsonMethod("dispatchVideoTaskV2", args)
+                        runOnUiThread { result.success(payload) }
+                    }.start()
+                }
+                "dispatchImageTask" -> {
+                    val args = listOf(
+                        call.argument<String>("baseUrl").orEmpty(),
+                        call.argument<String>("apiKey").orEmpty(),
+                        call.argument<String>("payload").orEmpty(),
+                    )
+                    Thread {
+                        val payload = invokeGoJsonMethod("dispatchImageTask", args)
+                        runOnUiThread { result.success(payload) }
+                    }.start()
+                }
+                "queryTask" -> {
+                    val args = listOf(
+                        call.argument<String>("baseUrl").orEmpty(),
+                        call.argument<String>("apiKey").orEmpty(),
+                        call.argument<String>("taskId").orEmpty(),
+                    )
+                    Thread {
+                        val payload = invokeGoJsonMethod("queryTask", args)
                         runOnUiThread { result.success(payload) }
                     }.start()
                 }
@@ -68,6 +86,9 @@ class MainActivity : FlutterActivity() {
                 "error" to payload.optString("error", ""),
                 "debug" to payload.optString("debug", ""),
                 "task_id" to payload.optString("task_id", ""),
+                "status" to payload.optString("status", ""),
+                "result_url" to payload.optString("result_url", ""),
+                "result_b64" to payload.optString("result_b64", ""),
             )
             val models = payload.optJSONArray("models")
             if (models != null) {

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/services.dart';
 
 class GoCoreBridge {
@@ -80,28 +82,69 @@ class GoCoreBridge {
   static Future<DispatchVideoTaskResult> dispatchVideoTask({
     required String baseUrl,
     required String apiKey,
-    required String model,
-    required String prompt,
-    required String size,
-    required double motionScale,
-    required String imageBase64,
+    required Map<String, Object?> payload,
   }) async {
     final raw = await _channel.invokeMapMethod<String, Object?>(
       'dispatchVideoTask',
       <String, Object?>{
         'baseUrl': baseUrl,
         'apiKey': apiKey,
-        'model': model,
-        'prompt': prompt,
-        'size': size,
-        'motionScale': motionScale.toStringAsFixed(3),
-        'imageBase64': imageBase64,
+        'payload': jsonEncode(payload),
       },
     );
 
     return DispatchVideoTaskResult(
       taskId: raw?['task_id'] as String? ?? '',
+      status: raw?['status'] as String? ?? '',
+      resultUrl: raw?['result_url'] as String? ?? '',
+      resultBase64: raw?['result_b64'] as String? ?? '',
       error: raw?['error'] as String? ?? 'Unknown dispatch result',
+    );
+  }
+
+  static Future<DispatchVideoTaskResult> dispatchImageTask({
+    required String baseUrl,
+    required String apiKey,
+    required Map<String, Object?> payload,
+  }) async {
+    final raw = await _channel.invokeMapMethod<String, Object?>(
+      'dispatchImageTask',
+      <String, Object?>{
+        'baseUrl': baseUrl,
+        'apiKey': apiKey,
+        'payload': jsonEncode(payload),
+      },
+    );
+
+    return DispatchVideoTaskResult(
+      taskId: raw?['task_id'] as String? ?? '',
+      status: raw?['status'] as String? ?? '',
+      resultUrl: raw?['result_url'] as String? ?? '',
+      resultBase64: raw?['result_b64'] as String? ?? '',
+      error: raw?['error'] as String? ?? 'Unknown image dispatch result',
+    );
+  }
+
+  static Future<TaskStatusResult> queryTask({
+    required String baseUrl,
+    required String apiKey,
+    required String taskId,
+  }) async {
+    final raw = await _channel.invokeMapMethod<String, Object?>(
+      'queryTask',
+      <String, Object?>{
+        'baseUrl': baseUrl,
+        'apiKey': apiKey,
+        'taskId': taskId,
+      },
+    );
+
+    return TaskStatusResult(
+      success: raw?['success'] == true,
+      status: raw?['status'] as String? ?? '',
+      resultUrl: raw?['result_url'] as String? ?? '',
+      resultBase64: raw?['result_b64'] as String? ?? '',
+      error: raw?['error'] as String? ?? 'Unknown task status result',
     );
   }
 }
@@ -137,11 +180,33 @@ class ModelFetchResult {
 class DispatchVideoTaskResult {
   const DispatchVideoTaskResult({
     required this.taskId,
+    required this.status,
+    required this.resultUrl,
+    required this.resultBase64,
     required this.error,
   });
 
   final String taskId;
+  final String status;
+  final String resultUrl;
+  final String resultBase64;
   final String error;
 
   bool get success => taskId.isNotEmpty && error.isEmpty;
+}
+
+class TaskStatusResult {
+  const TaskStatusResult({
+    required this.success,
+    required this.status,
+    required this.resultUrl,
+    required this.resultBase64,
+    required this.error,
+  });
+
+  final bool success;
+  final String status;
+  final String resultUrl;
+  final String resultBase64;
+  final String error;
 }

@@ -129,7 +129,6 @@ class _SettingsPanelState extends State<SettingsPanel> {
       if (modelsResult.success) {
         final videoModels = modelsResult.videoModels;
         final imageModels = modelsResult.imageModels;
-        final models = <String>{...videoModels, ...imageModels}.toList();
         final selectedVideo = videoModels.contains(_selectedVideoModel)
             ? _selectedVideoModel
             : videoModels.isNotEmpty
@@ -148,7 +147,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
           _lastFetchedCredentialKey = values.cacheKey;
           _result = _PanelResult.success(
             '模型获取成功',
-            '已筛选出 ${models.length} 个候选视频模型，请选择后测试连接。',
+            '已获取 ${videoModels.length} 个视频模型、${imageModels.length} 个图片模型，请选择后测试连接。',
           );
         });
         if (selectedVideo != null) {

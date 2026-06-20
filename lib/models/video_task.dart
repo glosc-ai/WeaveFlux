@@ -1,6 +1,6 @@
 enum VideoTaskStatus { processing, failed, completed }
 
-enum VideoTaskMode { textToVideo, imageToVideo }
+enum VideoTaskMode { textToVideo, imageToVideo, textToImage, imageToImage, extendVideo }
 
 class VideoTask {
   const VideoTask({
@@ -17,6 +17,8 @@ class VideoTask {
     this.imagePath = '',
     this.errorMessage = '',
     this.localVideoPath = '',
+    this.resultUrl = '',
+    this.resultBase64 = '',
   });
 
   factory VideoTask.fromJson(Map<String, Object?> json) {
@@ -36,6 +38,8 @@ class VideoTask {
       imagePath: json['image_path'] as String? ?? '',
       errorMessage: json['error_message'] as String? ?? '',
       localVideoPath: json['local_video_path'] as String? ?? '',
+      resultUrl: json['result_url'] as String? ?? '',
+      resultBase64: json['result_b64'] as String? ?? '',
     );
   }
 
@@ -52,6 +56,34 @@ class VideoTask {
   final String imagePath;
   final String errorMessage;
   final String localVideoPath;
+  final String resultUrl;
+  final String resultBase64;
+
+  VideoTask copyWith({
+    VideoTaskStatus? status,
+    String? errorMessage,
+    String? localVideoPath,
+    String? resultUrl,
+    String? resultBase64,
+  }) {
+    return VideoTask(
+      localId: localId,
+      remoteTaskId: remoteTaskId,
+      status: status ?? this.status,
+      mode: mode,
+      prompt: prompt,
+      model: model,
+      aspectRatio: aspectRatio,
+      size: size,
+      motionScale: motionScale,
+      createdAt: createdAt,
+      imagePath: imagePath,
+      errorMessage: errorMessage ?? this.errorMessage,
+      localVideoPath: localVideoPath ?? this.localVideoPath,
+      resultUrl: resultUrl ?? this.resultUrl,
+      resultBase64: resultBase64 ?? this.resultBase64,
+    );
+  }
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
@@ -68,6 +100,8 @@ class VideoTask {
       'image_path': imagePath,
       'error_message': errorMessage,
       'local_video_path': localVideoPath,
+      'result_url': resultUrl,
+      'result_b64': resultBase64,
     };
   }
 

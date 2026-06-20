@@ -137,6 +137,13 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
   }
 
   Future<void> _pickImage(LocalAssetSlot slot) async {
+    if (slot == LocalAssetSlot.clip) {
+      final video = await _imagePicker.pickVideo(source: ImageSource.gallery);
+      if (video == null || !mounted) return;
+      setState(() => _clipFile = video);
+      return;
+    }
+
     final image = await _imagePicker.pickImage(
       source: ImageSource.gallery,
       maxWidth: 1800,
@@ -150,7 +157,7 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
         case LocalAssetSlot.lastFrame:
           _lastFrameFile = image;
         case LocalAssetSlot.clip:
-          _clipFile = image;
+          break;
         case LocalAssetSlot.audio:
           break;
       }
@@ -193,10 +200,94 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
 
   Future<void> _startCreation() async {
     if (_target == CreationTarget.image) {
+      await _startImageCreation();
+      return;
+    }
+    if (_target == CreationTarget.image) {
       _showMessage('图片生成入口已就绪，后续接入图像生成端点后可直接派发。');
       return;
     }
     await _startVideoCreation();
+  }
+
+  Future<void> _startImageCreation() async {
+    if (_submitting) return;
+
+    final baseUrl = (await _storage.read(key: _baseUrlKey))?.trim() ?? '';
+    final apiKey = (await _storage.read(key: _apiKeyKey))?.trim() ?? '';
+    final model = _imageModelController.text.trim();
+    final prompt = _promptController.text.trim();
+
+    if (baseUrl.isEmpty || apiKey.isEmpty) {
+      setState(() => _sheetOpen = true);
+      return;
+    }
+    if (prompt.isEmpty) {
+      _showMessage('请输入图片提示词');
+      return;
+    }
+    if (model.isEmpty) {
+      _showMessage('请选择或输入图片模型');
+      return;
+    }
+
+    setState(() => _submitting = true);
+
+    try {
+      final referenceBase64 = _imageReferenceFile == null
+          ? ''
+          : base64Encode(await File(_imageReferenceFile!.path).readAsBytes());
+      final result = await GoCoreBridge.dispatchImageTask(
+        baseUrl: baseUrl,
+        apiKey: apiKey,
+        payload: <String, Object?>{
+          'model': model,
+          'prompt': prompt,
+          'size': _imageSize,
+          'quality': _imageQuality,
+          'count': _imageCount.toString(),
+          'negative_prompt': _negativePromptController.text.trim(),
+          'seed': _seedController.text.trim(),
+          'image_base64': referenceBase64,
+        },
+      );
+
+      if (!mounted) return;
+      if (!result.success) {
+        _showMessage(result.error.isEmpty ? '图片任务发起失败' : result.error);
+        return;
+      }
+
+      await TaskStore.instance.add(
+        VideoTask(
+          localId: DateTime.now().microsecondsSinceEpoch.toString(),
+          remoteTaskId: result.taskId,
+          status: _statusFromDispatch(result.status, result),
+          mode: _imageReferenceFile == null
+              ? VideoTaskMode.textToImage
+              : VideoTaskMode.imageToImage,
+          prompt: prompt,
+          model: model,
+          aspectRatio: _aspectRatioForSize(_imageSize),
+          size: _imageSize,
+          motionScale: 0,
+          createdAt: DateTime.now(),
+          imagePath: _imageReferenceFile?.path ?? '',
+          resultUrl: result.resultUrl,
+          resultBase64: result.resultBase64,
+        ),
+      );
+
+      _showMessage('图片任务已提交：${result.taskId}');
+      widget.onOpenTasks?.call();
+    } catch (error) {
+      if (!mounted) return;
+      _showMessage('图片任务发起失败：$error');
+    } finally {
+      if (mounted) {
+        setState(() => _submitting = false);
+      }
+    }
   }
 
   Future<void> _startVideoCreation() async {
@@ -238,15 +329,41 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
       final imageBase64 = _firstFrameFile == null
           ? ''
           : base64Encode(await File(_firstFrameFile!.path).readAsBytes());
+      final lastFrameBase64 = _lastFrameFile == null
+          ? ''
+          : base64Encode(await File(_lastFrameFile!.path).readAsBytes());
+      final clipBase64 = _clipFile == null
+          ? ''
+          : base64Encode(await File(_clipFile!.path).readAsBytes());
+      final audioBase64 = _audioFile?.path == null
+          ? ''
+          : base64Encode(await File(_audioFile!.path!).readAsBytes());
 
       final result = await GoCoreBridge.dispatchVideoTask(
         baseUrl: baseUrl,
         apiKey: apiKey,
-        model: model,
-        prompt: _buildDispatchPrompt(prompt),
-        size: _size,
-        motionScale: _motion,
-        imageBase64: imageBase64,
+        payload: <String, Object?>{
+          'model': model,
+          'prompt': prompt,
+          'legacy_prompt': _buildDispatchPrompt(prompt),
+          'size': _size,
+          'motion_scale': _motion.toStringAsFixed(3),
+          'duration': _duration.round().toString(),
+          'negative_prompt': _negativePromptController.text.trim(),
+          'prompt_extension': _promptExtension.toString(),
+          'watermark': _watermark.toString(),
+          'seed': _seedController.text.trim(),
+          'template': _templateController.text.trim(),
+          'mode': _apiVideoMode(),
+          'image_base64': imageBase64,
+          'last_frame_base64': lastFrameBase64,
+          'clip_base64': clipBase64,
+          'audio_base64': audioBase64,
+          'first_frame_url': _firstFrameUrlController.text.trim(),
+          'last_frame_url': _lastFrameUrlController.text.trim(),
+          'clip_url': _clipUrlController.text.trim(),
+          'audio_url': _audioUrlController.text.trim(),
+        },
       );
 
       if (!mounted) return;
@@ -259,10 +376,8 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
         VideoTask(
           localId: DateTime.now().microsecondsSinceEpoch.toString(),
           remoteTaskId: result.taskId,
-          status: VideoTaskStatus.processing,
-          mode: _videoMode == VideoCreationMode.promptOnly
-              ? VideoTaskMode.textToVideo
-              : VideoTaskMode.imageToVideo,
+          status: _statusFromDispatch(result.status, result),
+          mode: _taskModeForVideoMode(),
           prompt: prompt,
           model: model,
           aspectRatio: _aspectRatioForSize(_size),
@@ -270,6 +385,8 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
           motionScale: _motion,
           createdAt: DateTime.now(),
           imagePath: _firstFrameFile?.path ?? '',
+          resultUrl: result.resultUrl,
+          resultBase64: result.resultBase64,
         ),
       );
 
@@ -283,6 +400,40 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
         setState(() => _submitting = false);
       }
     }
+  }
+
+  VideoTaskStatus _statusFromDispatch(
+    String status,
+    DispatchVideoTaskResult result,
+  ) {
+    if (result.resultUrl.isNotEmpty || result.resultBase64.isNotEmpty) {
+      return VideoTaskStatus.completed;
+    }
+    return switch (status.trim().toLowerCase()) {
+      'completed' || 'succeeded' || 'success' || 'finished' =>
+        VideoTaskStatus.completed,
+      'failed' || 'error' => VideoTaskStatus.failed,
+      _ => VideoTaskStatus.processing,
+    };
+  }
+
+  VideoTaskMode _taskModeForVideoMode() {
+    return switch (_videoMode) {
+      VideoCreationMode.promptOnly => VideoTaskMode.textToVideo,
+      VideoCreationMode.extendClip => VideoTaskMode.extendVideo,
+      VideoCreationMode.firstFrame || VideoCreationMode.firstLastFrame =>
+        VideoTaskMode.imageToVideo,
+    };
+  }
+
+  String _apiVideoMode() {
+    return switch (_videoMode) {
+      VideoCreationMode.firstLastFrame => 'keyframes',
+      VideoCreationMode.promptOnly ||
+      VideoCreationMode.firstFrame ||
+      VideoCreationMode.extendClip =>
+        'ti2vid',
+    };
   }
 
   String _buildDispatchPrompt(String prompt) {

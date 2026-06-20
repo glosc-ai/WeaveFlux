@@ -27,16 +27,33 @@ type modelsResult struct {
 }
 
 type dispatchResult struct {
-	TaskID string `json:"task_id"`
-	Error  string `json:"error"`
+	TaskID    string `json:"task_id"`
+	Status    string `json:"status"`
+	ResultURL string `json:"result_url"`
+	ResultB64 string `json:"result_b64"`
+	Error     string `json:"error"`
 }
 
 type videoGenerationRequest struct {
-	Model       string  `json:"model"`
-	Prompt      string  `json:"prompt"`
-	Size        string  `json:"size"`
-	MotionScale float64 `json:"motion_scale,omitempty"`
-	Image       string  `json:"image,omitempty"`
+	Model           string  `json:"model"`
+	Prompt          string  `json:"prompt"`
+	Size            string  `json:"size"`
+	MotionScale     float64 `json:"motion_scale,omitempty"`
+	Duration        int     `json:"duration,omitempty"`
+	NegativePrompt  string  `json:"negative_prompt,omitempty"`
+	PromptExtension *bool   `json:"prompt_extension,omitempty"`
+	Watermark       *bool   `json:"watermark,omitempty"`
+	Seed            string  `json:"seed,omitempty"`
+	Template        string  `json:"template,omitempty"`
+	Mode            string  `json:"mode,omitempty"`
+	Image           string  `json:"image,omitempty"`
+	LastFrameImage  string  `json:"last_frame_image,omitempty"`
+	Video           string  `json:"video,omitempty"`
+	Audio           string  `json:"audio,omitempty"`
+	FirstFrameURL   string  `json:"first_frame_url,omitempty"`
+	LastFrameURL    string  `json:"last_frame_url,omitempty"`
+	ClipURL         string  `json:"clip_url,omitempty"`
+	AudioURL        string  `json:"audio_url,omitempty"`
 }
 
 type chatCompletionRequest struct {
@@ -64,6 +81,58 @@ type imageURL struct {
 type dispatchAttempt struct {
 	Path string
 	Body any
+}
+
+type videoDispatchPayload struct {
+	Model           string `json:"model"`
+	Prompt          string `json:"prompt"`
+	Size            string `json:"size"`
+	MotionScale     string `json:"motion_scale"`
+	Duration        string `json:"duration"`
+	NegativePrompt  string `json:"negative_prompt"`
+	PromptExtension string `json:"prompt_extension"`
+	Watermark       string `json:"watermark"`
+	Seed            string `json:"seed"`
+	Template        string `json:"template"`
+	Mode            string `json:"mode"`
+	ImageBase64     string `json:"image_base64"`
+	LastFrameBase64 string `json:"last_frame_base64"`
+	ClipBase64      string `json:"clip_base64"`
+	AudioBase64     string `json:"audio_base64"`
+	FirstFrameURL   string `json:"first_frame_url"`
+	LastFrameURL    string `json:"last_frame_url"`
+	ClipURL         string `json:"clip_url"`
+	AudioURL        string `json:"audio_url"`
+}
+
+type imageGenerationRequest struct {
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	Size           string `json:"size,omitempty"`
+	Quality        string `json:"quality,omitempty"`
+	N              int    `json:"n,omitempty"`
+	NegativePrompt string `json:"negative_prompt,omitempty"`
+	Seed           string `json:"seed,omitempty"`
+	Image          string `json:"image,omitempty"`
+}
+
+type imageDispatchPayload struct {
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	Size           string `json:"size"`
+	Quality        string `json:"quality"`
+	Count          string `json:"count"`
+	NegativePrompt string `json:"negative_prompt"`
+	Seed           string `json:"seed"`
+	ImageBase64    string `json:"image_base64"`
+}
+
+type taskStatusResult struct {
+	Success   bool   `json:"success"`
+	Status    string `json:"status"`
+	ResultURL string `json:"result_url"`
+	ResultB64 string `json:"result_b64"`
+	Error     string `json:"error"`
 }
 
 type modelsResponse struct {
@@ -118,64 +187,242 @@ func FetchModels(baseURL, apiKey string) string {
 
 // DispatchVideoTask sends a T2V/I2V video generation request.
 func DispatchVideoTask(baseURL, apiKey, model, prompt, size, motionScale, imageBase64 string) string {
+	payload := videoDispatchPayload{
+		Model:       model,
+		Prompt:      prompt,
+		Size:        size,
+		MotionScale: motionScale,
+		ImageBase64: imageBase64,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return encodeDispatchResult("", "", "", "", "Failed to encode video payload")
+	}
+	return DispatchVideoTaskV2(baseURL, apiKey, string(data))
+}
+
+// DispatchVideoTaskV2 accepts a JSON payload so Dart and Go can exchange rich
+// request data while keeping the gomobile boundary to primitive strings.
+func DispatchVideoTaskV2(baseURL, apiKey, payloadJSON string) string {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	apiKey = strings.TrimSpace(apiKey)
-	model = strings.TrimSpace(model)
-	prompt = strings.TrimSpace(prompt)
-	size = strings.TrimSpace(size)
-	imageBase64 = strings.TrimSpace(imageBase64)
+
+	var payload videoDispatchPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return encodeDispatchResult("", "", "", "", fmt.Sprintf("Invalid video payload JSON: %v", err))
+	}
+
+	model := strings.TrimSpace(payload.Model)
+	prompt := strings.TrimSpace(payload.Prompt)
+	size := strings.TrimSpace(payload.Size)
+	imageBase64 := strings.TrimSpace(payload.ImageBase64)
+	lastFrameBase64 := strings.TrimSpace(payload.LastFrameBase64)
+	clipBase64 := strings.TrimSpace(payload.ClipBase64)
+	audioBase64 := strings.TrimSpace(payload.AudioBase64)
 
 	if baseURL == "" {
-		return encodeDispatchResult("", "Base URL is empty")
+		return encodeDispatchResult("", "", "", "", "Base URL is empty")
 	}
 	if apiKey == "" {
-		return encodeDispatchResult("", "API Key is empty")
+		return encodeDispatchResult("", "", "", "", "API Key is empty")
 	}
 	if model == "" {
-		return encodeDispatchResult("", "Model is empty")
+		return encodeDispatchResult("", "", "", "", "Model is empty")
 	}
 	if prompt == "" {
-		return encodeDispatchResult("", "Prompt is empty")
+		return encodeDispatchResult("", "", "", "", "Prompt is empty")
 	}
 	if size == "" {
-		return encodeDispatchResult("", "Size is empty")
+		return encodeDispatchResult("", "", "", "", "Size is empty")
 	}
 
-	motion, err := strconv.ParseFloat(strings.TrimSpace(motionScale), 64)
+	motion, err := strconv.ParseFloat(strings.TrimSpace(payload.MotionScale), 64)
 	if err != nil {
 		motion = 0
+	}
+	duration, _ := strconv.Atoi(strings.TrimSpace(payload.Duration))
+	promptExtension, hasPromptExtension := parseOptionalBool(payload.PromptExtension)
+	watermark, hasWatermark := parseOptionalBool(payload.Watermark)
+
+	videoMode := normalizeVideoMode(payload.Mode)
+	requestBody := videoGenerationRequest{
+		Model:          model,
+		Prompt:         prompt,
+		Size:           size,
+		MotionScale:    motion,
+		Duration:       duration,
+		NegativePrompt: strings.TrimSpace(payload.NegativePrompt),
+		Seed:           strings.TrimSpace(payload.Seed),
+		Template:       strings.TrimSpace(payload.Template),
+		Mode:           videoMode,
+		Image:          asDataURL(imageBase64, "image/jpeg"),
+		LastFrameImage: asDataURL(lastFrameBase64, "image/jpeg"),
+		Video:          asDataURL(clipBase64, "video/mp4"),
+		Audio:          asDataURL(audioBase64, "audio/mpeg"),
+		FirstFrameURL:  strings.TrimSpace(payload.FirstFrameURL),
+		LastFrameURL:   strings.TrimSpace(payload.LastFrameURL),
+		ClipURL:        strings.TrimSpace(payload.ClipURL),
+		AudioURL:       strings.TrimSpace(payload.AudioURL),
+	}
+	if hasPromptExtension {
+		requestBody.PromptExtension = &promptExtension
+	}
+	if hasWatermark {
+		requestBody.Watermark = &watermark
+	}
+
+	attempts := videoDispatchAttempts(
+		requestBody,
+		buildChatCompletionRequest(model, videoPayloadPrompt(payload, videoMode), size, motion, imageBase64),
+	)
+
+	errors := make([]string, 0, len(attempts))
+	for _, attempt := range attempts {
+		taskID, resultURL, resultB64, unsupported, errMsg := dispatchToEndpoint(baseURL, apiKey, attempt)
+		if errMsg == "" {
+			status := "processing"
+			if resultURL != "" || resultB64 != "" {
+				status = "completed"
+			}
+			return encodeDispatchResult(taskID, status, resultURL, resultB64, "")
+		}
+		errors = append(errors, attempt.Path+": "+errMsg)
+		if !unsupported {
+			return encodeDispatchResult("", "", "", "", errMsg)
+		}
+	}
+
+	return encodeDispatchResult("", "", "", "", strings.Join(errors, "; "))
+}
+
+// DispatchImageTask sends an OpenAI-compatible image generation request.
+func DispatchImageTask(baseURL, apiKey, payloadJSON string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	apiKey = strings.TrimSpace(apiKey)
+
+	var payload imageDispatchPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return encodeDispatchResult("", "", "", "", fmt.Sprintf("Invalid image payload JSON: %v", err))
+	}
+
+	model := strings.TrimSpace(payload.Model)
+	prompt := strings.TrimSpace(payload.Prompt)
+	if baseURL == "" {
+		return encodeDispatchResult("", "", "", "", "Base URL is empty")
+	}
+	if apiKey == "" {
+		return encodeDispatchResult("", "", "", "", "API Key is empty")
+	}
+	if model == "" {
+		return encodeDispatchResult("", "", "", "", "Model is empty")
+	}
+	if prompt == "" {
+		return encodeDispatchResult("", "", "", "", "Prompt is empty")
+	}
+
+	count, _ := strconv.Atoi(strings.TrimSpace(payload.Count))
+	if count <= 0 {
+		count = 1
+	}
+
+	body := imageGenerationRequest{
+		Model:          model,
+		Prompt:         prompt,
+		Size:           strings.TrimSpace(payload.Size),
+		Quality:        strings.TrimSpace(payload.Quality),
+		N:              count,
+		NegativePrompt: strings.TrimSpace(payload.NegativePrompt),
+		Seed:           strings.TrimSpace(payload.Seed),
+		Image:          asDataURL(strings.TrimSpace(payload.ImageBase64), "image/jpeg"),
 	}
 
 	attempts := []dispatchAttempt{
 		{
-			Path: "/videos/generations",
-			Body: videoGenerationRequest{
-				Model:       model,
-				Prompt:      prompt,
-				Size:        size,
-				MotionScale: motion,
-				Image:       imageBase64,
-			},
+			Path: "/images/generations",
+			Body: body,
 		},
 		{
 			Path: "/chat/completions",
-			Body: buildChatCompletionRequest(model, prompt, size, motion, imageBase64),
+			Body: buildImageChatCompletionRequest(payload, body),
 		},
 	}
 
 	errors := make([]string, 0, len(attempts))
 	for _, attempt := range attempts {
-		taskID, unsupported, errMsg := dispatchToEndpoint(baseURL, apiKey, attempt)
+		taskID, resultURL, resultB64, unsupported, errMsg := dispatchToEndpoint(baseURL, apiKey, attempt)
 		if errMsg == "" {
-			return encodeDispatchResult(taskID, "")
+			status := "processing"
+			if resultURL != "" || resultB64 != "" {
+				status = "completed"
+			}
+			return encodeDispatchResult(taskID, status, resultURL, resultB64, "")
 		}
 		errors = append(errors, attempt.Path+": "+errMsg)
 		if !unsupported {
-			return encodeDispatchResult("", errMsg)
+			return encodeDispatchResult("", "", "", "", errMsg)
 		}
 	}
 
-	return encodeDispatchResult("", strings.Join(errors, "; "))
+	return encodeDispatchResult("", "", "", "", strings.Join(errors, "; "))
+}
+
+func videoDispatchAttempts(videoBody videoGenerationRequest, chatBody chatCompletionRequest) []dispatchAttempt {
+	return []dispatchAttempt{
+		{
+			Path: "/video/generations",
+			Body: videoBody,
+		},
+		{
+			Path: "/videos/generations",
+			Body: videoBody,
+		},
+		{
+			Path: "/videos",
+			Body: videoBody,
+		},
+		{
+			Path: "/chat/completions",
+			Body: chatBody,
+		},
+	}
+}
+
+// QueryTask checks a remote async generation task. It intentionally tries a
+// small set of common OpenAI-compatible provider paths.
+func QueryTask(baseURL, apiKey, taskID string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	apiKey = strings.TrimSpace(apiKey)
+	taskID = strings.TrimSpace(taskID)
+	if baseURL == "" {
+		return encodeTaskStatusResult(false, "", "", "", "Base URL is empty")
+	}
+	if apiKey == "" {
+		return encodeTaskStatusResult(false, "", "", "", "API Key is empty")
+	}
+	if taskID == "" {
+		return encodeTaskStatusResult(false, "", "", "", "Task ID is empty")
+	}
+
+	paths := []string{
+		"/video/generations/" + taskID,
+		"/videos/generations/" + taskID,
+		"/videos/" + taskID,
+		"/videos/tasks/" + taskID,
+		"/videos/" + taskID + "/content",
+		"/tasks/" + taskID,
+	}
+	errors := make([]string, 0, len(paths))
+	for _, path := range paths {
+		status, resultURL, resultB64, unsupported, errMsg := queryTaskEndpoint(baseURL, apiKey, path)
+		if errMsg == "" {
+			return encodeTaskStatusResult(true, status, resultURL, resultB64, "")
+		}
+		errors = append(errors, path+": "+errMsg)
+		if !unsupported {
+			return encodeTaskStatusResult(false, "", "", "", errMsg)
+		}
+	}
+	return encodeTaskStatusResult(false, "", "", "", strings.Join(errors, "; "))
 }
 
 func fetchModelIDs(baseURL, apiKey string) (modelCollection, string) {
@@ -227,6 +474,106 @@ func extractTaskID(data []byte) string {
 	return extractTaskIDFromText(string(data))
 }
 
+func extractResultURL(data []byte) string {
+	var payload any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return extractResultURLFromText(string(data))
+	}
+	if value := findStringByKeys(payload, []string{"url", "video_url", "output_url", "result_url", "image_url"}); value != "" {
+		return value
+	}
+	return extractResultURLFromText(string(data))
+}
+
+func extractResultB64(data []byte) string {
+	var payload any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return extractResultB64FromText(string(data))
+	}
+	if value := findStringByKeys(payload, []string{"b64_json", "base64", "image_base64", "video_base64"}); value != "" {
+		return value
+	}
+	return extractResultB64FromText(string(data))
+}
+
+func extractStatus(data []byte) string {
+	var payload any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return ""
+	}
+	status := strings.ToLower(findStringByKeys(payload, []string{"status", "state"}))
+	switch status {
+	case "succeeded", "success", "finished", "complete":
+		return "completed"
+	case "failed", "error", "cancelled", "canceled":
+		return "failed"
+	case "queued", "pending", "running", "processing", "in_progress", "submitted":
+		return "processing"
+	default:
+		return status
+	}
+}
+
+func findStringByKeys(value any, keys []string) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range keys {
+			if raw, ok := typed[key].(string); ok && strings.TrimSpace(raw) != "" {
+				return strings.TrimSpace(raw)
+			}
+		}
+		for _, item := range typed {
+			if value := findStringByKeys(item, keys); value != "" {
+				return value
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if value := findStringByKeys(item, keys); value != "" {
+				return value
+			}
+		}
+	case string:
+		var nested any
+		if err := json.Unmarshal([]byte(typed), &nested); err == nil {
+			if value := findStringByKeys(nested, keys); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func extractResultURLFromText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`data:(?:image|video)/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=_-]+`),
+		regexp.MustCompile(`https?://[^\s"'<>，。)）]+`),
+	}
+	for _, pattern := range patterns {
+		if match := pattern.FindString(value); match != "" {
+			return strings.TrimRight(match, ".,;")
+		}
+	}
+	return ""
+}
+
+func extractResultB64FromText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	pattern := regexp.MustCompile(`(?i)(?:b64_json|base64|image_base64|video_base64)\s*[:=]\s*"?(data:[^,"\s]+|[A-Za-z0-9+/=_-]{80,})"?`)
+	matches := pattern.FindStringSubmatch(value)
+	if len(matches) > 1 {
+		return strings.TrimSpace(matches[1])
+	}
+	return ""
+}
+
 func findTaskID(value any) string {
 	switch typed := value.(type) {
 	case map[string]any:
@@ -276,15 +623,15 @@ func extractTaskIDFromText(value string) string {
 	return ""
 }
 
-func dispatchToEndpoint(baseURL, apiKey string, attempt dispatchAttempt) (string, bool, string) {
+func dispatchToEndpoint(baseURL, apiKey string, attempt dispatchAttempt) (string, string, string, bool, string) {
 	body, err := json.Marshal(attempt.Body)
 	if err != nil {
-		return "", false, fmt.Sprintf("Failed to encode request: %v", err)
+		return "", "", "", false, fmt.Sprintf("Failed to encode request: %v", err)
 	}
 
 	req, err := http.NewRequest(http.MethodPost, baseURL+attempt.Path, bytes.NewReader(body))
 	if err != nil {
-		return "", false, fmt.Sprintf("Invalid request: %v", err)
+		return "", "", "", false, fmt.Sprintf("Invalid request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -292,7 +639,7 @@ func dispatchToEndpoint(baseURL, apiKey string, attempt dispatchAttempt) (string
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", false, fmt.Sprintf("Network error: %v", err)
+		return "", "", "", false, fmt.Sprintf("Network error: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -303,17 +650,73 @@ func dispatchToEndpoint(baseURL, apiKey string, attempt dispatchAttempt) (string
 			message = http.StatusText(resp.StatusCode)
 		}
 		errMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, message)
-		return "", isUnsupportedEndpoint(resp.StatusCode, message), errMsg
+		return "", "", "", isUnsupportedEndpoint(resp.StatusCode, message), errMsg
 	}
 
 	taskID := extractTaskID(respBody)
 	if attempt.Path == "/chat/completions" {
 		taskID = extractChatTaskID(respBody)
 	}
-	if taskID == "" {
-		return "", false, "No task_id returned by " + attempt.Path
+	resultURL := extractResultURL(respBody)
+	resultB64 := extractResultB64(respBody)
+	if taskID == "" && resultURL != "" {
+		taskID = resultURL
 	}
-	return taskID, false, ""
+	if taskID == "" && resultB64 != "" {
+		taskID = "inline_base64_result"
+	}
+	if taskID == "" {
+		return "", "", "", false, "No task_id/url/b64_json returned by " + attempt.Path + ": " + responsePreview(respBody)
+	}
+	return taskID, resultURL, resultB64, false, ""
+}
+
+func responsePreview(data []byte) string {
+	value := strings.TrimSpace(string(data))
+	if value == "" {
+		return "<empty response body>"
+	}
+	const limit = 1200
+	if len(value) > limit {
+		return value[:limit] + "...<truncated>"
+	}
+	return value
+}
+
+func queryTaskEndpoint(baseURL, apiKey, path string) (string, string, string, bool, string) {
+	req, err := http.NewRequest(http.MethodGet, baseURL+path, nil)
+	if err != nil {
+		return "", "", "", false, fmt.Sprintf("Invalid request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 45 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", "", false, fmt.Sprintf("Network error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message := strings.TrimSpace(string(respBody))
+		if message == "" {
+			message = http.StatusText(resp.StatusCode)
+		}
+		return "", "", "", isUnsupportedEndpoint(resp.StatusCode, message), fmt.Sprintf("HTTP %d: %s", resp.StatusCode, message)
+	}
+
+	status := extractStatus(respBody)
+	resultURL := extractResultURL(respBody)
+	resultB64 := extractResultB64(respBody)
+	if status == "" {
+		if resultURL != "" || resultB64 != "" {
+			status = "completed"
+		} else {
+			status = "processing"
+		}
+	}
+	return status, resultURL, resultB64, false, ""
 }
 
 func extractChatTaskID(data []byte) string {
@@ -363,12 +766,115 @@ func buildChatCompletionRequest(model, prompt, size string, motion float64, imag
 	}
 }
 
+func buildImageChatCompletionRequest(payload imageDispatchPayload, body imageGenerationRequest) chatCompletionRequest {
+	text := strings.Join([]string{
+		strings.TrimSpace(payload.Prompt),
+		"",
+		"Image generation parameters:",
+		"size: " + strings.TrimSpace(payload.Size),
+		"quality: " + strings.TrimSpace(payload.Quality),
+		"n: " + strings.TrimSpace(payload.Count),
+		"negative_prompt: " + strings.TrimSpace(payload.NegativePrompt),
+		"seed: " + strings.TrimSpace(payload.Seed),
+		"",
+		"Return either a JSON object containing task_id, url, or b64_json.",
+	}, "\n")
+	message := chatMessage{Role: "user", Content: text}
+	if body.Image != "" {
+		message.Content = []multimodalContent{
+			{Type: "text", Text: text},
+			{Type: "image_url", ImageURL: &imageURL{URL: body.Image}},
+		}
+	}
+	return chatCompletionRequest{
+		Model:    strings.TrimSpace(payload.Model),
+		Messages: []chatMessage{message},
+		Size:     strings.TrimSpace(payload.Size),
+	}
+}
+
+func videoPayloadPrompt(payload videoDispatchPayload, videoMode string) string {
+	parts := []string{strings.TrimSpace(payload.Prompt), "", "Video generation parameters:"}
+	addPromptPart := func(label, value string) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			parts = append(parts, label+": "+value)
+		}
+	}
+	addPromptPart("mode", videoMode)
+	addPromptPart("size", payload.Size)
+	addPromptPart("duration", payload.Duration)
+	addPromptPart("motion_scale", payload.MotionScale)
+	addPromptPart("negative_prompt", payload.NegativePrompt)
+	addPromptPart("prompt_extension", payload.PromptExtension)
+	addPromptPart("watermark", payload.Watermark)
+	addPromptPart("seed", payload.Seed)
+	addPromptPart("template", payload.Template)
+	addPromptPart("first_frame_url", payload.FirstFrameURL)
+	addPromptPart("last_frame_url", payload.LastFrameURL)
+	addPromptPart("clip_url", payload.ClipURL)
+	addPromptPart("audio_url", payload.AudioURL)
+	if payload.LastFrameBase64 != "" {
+		parts = append(parts, "last_frame_image: attached as base64 payload")
+	}
+	if payload.ClipBase64 != "" {
+		parts = append(parts, "clip: attached as base64 payload")
+	}
+	if payload.AudioBase64 != "" {
+		parts = append(parts, "audio: attached as base64 payload")
+	}
+	return strings.Join(parts, "\n")
+}
+
+func parseOptionalBool(value string) (bool, bool) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return false, false
+	}
+	switch value {
+	case "true", "1", "yes", "on":
+		return true, true
+	case "false", "0", "no", "off":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func normalizeVideoMode(value string) string {
+	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), "_", "")) {
+	case "keyframes", "firstlastframe", "firstlast", "lastframe":
+		return "keyframes"
+	case "ti2vid", "t2v", "i2v", "promptonly", "prompt", "firstframe", "extendclip", "extend":
+		return "ti2vid"
+	default:
+		if strings.TrimSpace(value) == "" {
+			return "ti2vid"
+		}
+		return strings.TrimSpace(value)
+	}
+}
+
+func asDataURL(value, mimeType string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "data:") || strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		return value
+	}
+	return "data:" + mimeType + ";base64," + value
+}
+
 func isUnsupportedEndpoint(statusCode int, body string) bool {
 	if statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed {
 		return true
 	}
 	body = strings.ToLower(body)
 	return strings.Contains(body, "invalid url") ||
+		strings.Contains(body, "not_found_error") ||
+		strings.Contains(body, "requested resource was not found") ||
+		strings.Contains(body, "/v1/videos") ||
 		strings.Contains(body, "not found") ||
 		strings.Contains(body, "unsupported endpoint")
 }
@@ -434,6 +940,18 @@ func (c *modelCollection) mergeTypedModels(items []modelItem, mediaType string) 
 		id := strings.TrimSpace(item.ID)
 		if id == "" {
 			continue
+		}
+		hasVideo := hasVideoCategory(item.Categories)
+		hasImage := hasImageCategory(item.Categories)
+		switch mediaType {
+		case "video":
+			if !hasVideo {
+				continue
+			}
+		case "image":
+			if !hasImage {
+				continue
+			}
 		}
 		c.addModel(id)
 		switch mediaType {
@@ -717,10 +1235,18 @@ func encodeModelsResult(success bool, videoModels, imageModels []string, errMsg,
 	return string(data)
 }
 
-func encodeDispatchResult(taskID, errMsg string) string {
-	data, err := json.Marshal(dispatchResult{TaskID: taskID, Error: errMsg})
+func encodeDispatchResult(taskID, status, resultURL, resultB64, errMsg string) string {
+	data, err := json.Marshal(dispatchResult{TaskID: taskID, Status: status, ResultURL: resultURL, ResultB64: resultB64, Error: errMsg})
 	if err != nil {
 		return `{"task_id":"","error":"Failed to encode dispatch result"}`
+	}
+	return string(data)
+}
+
+func encodeTaskStatusResult(success bool, status, resultURL, resultB64, errMsg string) string {
+	data, err := json.Marshal(taskStatusResult{Success: success, Status: status, ResultURL: resultURL, ResultB64: resultB64, Error: errMsg})
+	if err != nil {
+		return `{"success":false,"error":"Failed to encode task status result"}`
 	}
 	return string(data)
 }

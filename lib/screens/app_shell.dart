@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../services/model_catalog.dart';
@@ -17,6 +19,7 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   int _currentIndex = 0;
+  Timer? _taskPollTimer;
 
   static const _pages = [
     CreateWorkspace(),
@@ -38,6 +41,17 @@ class _AppShellState extends State<AppShell> {
     super.initState();
     TaskStore.instance.load();
     ModelCatalog.instance.refreshFromSavedCredentials();
+    TaskStore.instance.pollProcessingTasks();
+    _taskPollTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => TaskStore.instance.pollProcessingTasks(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _taskPollTimer?.cancel();
+    super.dispose();
   }
 
   @override
