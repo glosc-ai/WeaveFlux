@@ -1,8 +1,13 @@
+import 'dart:io';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
+import 'package:video_player/video_player.dart';
 
+import '../models/video_task.dart';
+import '../services/media_store_exporter.dart';
+import '../services/task_store.dart';
 import '../theme/app_theme.dart';
 import 'create_workspace.dart';
 
@@ -16,51 +21,7 @@ class PrivateGallery extends StatefulWidget {
 }
 
 class _PrivateGalleryState extends State<PrivateGallery> {
-  final List<_GalleryItem> _items = [
-    const _GalleryItem(
-      id: 'vid-001',
-      prompt: '赛博朋克东京街头的航拍镜头，霓虹灯在雨中闪烁...',
-      date: '2 小时前',
-      duration: '0:08',
-      title: '赛博朋克\n东京夜景',
-      colors: [Color(0xFF0A0A2E), Color(0xFF1A1A3E), Color(0xFF2D1B69)],
-    ),
-    const _GalleryItem(
-      id: 'vid-002',
-      prompt: '水墨风格山水画动态视频，云雾缭绕山间...',
-      date: '5 小时前',
-      duration: '0:05',
-      title: '水墨山水\n云雾缭绕',
-      colors: [Color(0xFF1A1A1A), Color(0xFF2D2D2D), Color(0xFF4A4A4A)],
-    ),
-    const _GalleryItem(
-      id: 'vid-003',
-      prompt: '4K time-lapse of aurora borealis over snow-capped mountains...',
-      date: '昨天',
-      duration: '0:12',
-      title: '极光雪山\n延时摄影',
-      colors: [Color(0xFF0A1628), Color(0xFF0D2137), Color(0xFF1A3A5C)],
-    ),
-    const _GalleryItem(
-      id: 'vid-004',
-      prompt:
-          'Futuristic city concept art, flying vehicles, holographic ads...',
-      date: '昨天',
-      duration: '0:06',
-      title: '未来城市\n概念设计',
-      colors: [Color(0xFF1A0A2E), Color(0xFF2D1B4A), Color(0xFF4A2D6B)],
-    ),
-    const _GalleryItem(
-      id: 'vid-005',
-      prompt: '深海发光水母群游动，生物荧光在黑暗中闪烁...',
-      date: '3 天前',
-      duration: '0:10',
-      title: '深海荧光\n水母群游',
-      colors: [Color(0xFF0A1A2E), Color(0xFF0D2847), Color(0xFF1A4A6B)],
-    ),
-  ];
-
-  _GalleryItem? _activeItem;
+  VideoTask? _activeTask;
   bool _confirmingDelete = false;
   String? _toast;
 
@@ -72,49 +33,91 @@ class _PrivateGalleryState extends State<PrivateGallery> {
     });
   }
 
-  void _deleteActive() {
-    final item = _activeItem;
-    if (item == null) return;
-    setState(() {
-      _items.removeWhere((candidate) => candidate.id == item.id);
-      _activeItem = null;
-      _confirmingDelete = false;
-    });
-    _showToast('已删除本地缓存');
+  Future<void> _exportActive() async {
+    final task = _activeTask;
+    if (task == null || task.localVideoPath.isEmpty) return;
+    try {
+      await MediaStoreExporter.instance.exportVideo(
+        localPath: task.localVideoPath,
+        displayName: 'weaveflux_${task.localId}.mp4',
+      );
+      _showToast('已成功保存至系统相册');
+    } catch (error) {
+      _showToast('导出失败：$error');
+    }
+  }
+
+  Future<void> _deleteActive() async {
+    final task = _activeTask;
+    if (task == null) return;
+    try {
+      final path = task.localVideoPath;
+      if (path.isNotEmpty) {
+        final file = File(path);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      }
+      await TaskStore.instance.update(
+        task.copyWith(localVideoPath: ''),
+      );
+      if (!mounted) return;
+      setState(() {
+        _activeTask = null;
+        _confirmingDelete = false;
+      });
+      _showToast('已删除本地沙盒视频');
+    } catch (error) {
+      _showToast('删除失败：$error');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return WeaveScaffold(
-      activeRoute: PrivateGallery.routeName,
-      header: _GalleryHeader(count: _items.length),
-      overlays: [
-        if (_activeItem != null)
-          _PlayerOverlay(
-            item: _activeItem!,
-            confirmingDelete: _confirmingDelete,
-            onClose: () => setState(() => _activeItem = null),
-            onDownload: () => _showToast('正在导出至 Movies/WeaveFlux...'),
-            onDelete: () => setState(() => _confirmingDelete = true),
-            onCancelDelete: () => setState(() => _confirmingDelete = false),
-            onConfirmDelete: _deleteActive,
-          ),
-        if (_toast != null) _Toast(message: _toast!),
-      ],
-      child: MasonryGridView.count(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-        crossAxisCount: 2,
-        mainAxisSpacing: 10,
-        crossAxisSpacing: 10,
-        itemCount: _items.length,
-        itemBuilder: (context, index) {
-          final item = _items[index];
-          return _GalleryTile(
-            item: item,
-            onTap: () => setState(() => _activeItem = item),
-          );
-        },
-      ),
+    return ValueListenableBuilder<List<VideoTask>>(
+      valueListenable: TaskStore.instance.tasks,
+      builder: (context, tasks, _) {
+        final items = tasks
+            .where((task) =>
+                task.status == VideoTaskStatus.completed &&
+                task.localVideoPath.isNotEmpty &&
+                File(task.localVideoPath).existsSync())
+            .toList();
+
+        return WeaveScaffold(
+          activeRoute: PrivateGallery.routeName,
+          header: _GalleryHeader(count: items.length),
+          overlays: [
+            if (_activeTask != null)
+              _PlayerOverlay(
+                task: _activeTask!,
+                confirmingDelete: _confirmingDelete,
+                onClose: () => setState(() => _activeTask = null),
+                onDownload: _exportActive,
+                onDelete: () => setState(() => _confirmingDelete = true),
+                onCancelDelete: () => setState(() => _confirmingDelete = false),
+                onConfirmDelete: _deleteActive,
+              ),
+            if (_toast != null) _Toast(message: _toast!),
+          ],
+          child: items.isEmpty
+              ? const _EmptyGallery()
+              : MasonryGridView.count(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 10,
+                  crossAxisSpacing: 10,
+                  itemCount: items.length,
+                  itemBuilder: (context, index) {
+                    final task = items[index];
+                    return _GalleryTile(
+                      task: task,
+                      onTap: () => setState(() => _activeTask = task),
+                    );
+                  },
+                ),
+        );
+      },
     );
   }
 }
@@ -150,10 +153,27 @@ class _GalleryHeader extends StatelessWidget {
   }
 }
 
-class _GalleryTile extends StatelessWidget {
-  const _GalleryTile({required this.item, required this.onTap});
+class _EmptyGallery extends StatelessWidget {
+  const _EmptyGallery();
 
-  final _GalleryItem item;
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
+        child: Text(
+          '暂无已下载到本地沙盒的视频',
+          style: TextStyle(color: AppColors.muted, fontSize: 13),
+        ),
+      ),
+    );
+  }
+}
+
+class _GalleryTile extends StatelessWidget {
+  const _GalleryTile({required this.task, required this.onTap});
+
+  final VideoTask task;
   final VoidCallback onTap;
 
   @override
@@ -171,27 +191,8 @@ class _GalleryTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   AspectRatio(
-                    aspectRatio: 9 / 16,
-                    child: Container(
-                      alignment: Alignment.center,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: item.colors,
-                        ),
-                      ),
-                      child: Text(
-                        item.title,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.35),
-                          fontSize: 13,
-                          height: 1.4,
-                        ),
-                      ),
-                    ),
+                    aspectRatio: task.aspectRatio == '16:9' ? 16 / 9 : 9 / 16,
+                    child: _VideoThumb(path: task.localVideoPath),
                   ),
                   Padding(
                     padding: const EdgeInsets.all(12),
@@ -199,14 +200,14 @@ class _GalleryTile extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          item.prompt,
+                          task.prompt,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(fontSize: 12, height: 1.4),
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          item.date,
+                          _relativeTime(task.createdAt),
                           style: const TextStyle(
                               color: AppColors.muted, fontSize: 10),
                         ),
@@ -226,9 +227,9 @@ class _GalleryTile extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 8, vertical: 3),
                       color: Colors.black.withValues(alpha: 0.7),
-                      child: Text(
-                        item.duration,
-                        style: const TextStyle(
+                      child: const Text(
+                        '本地',
+                        style: TextStyle(
                             fontSize: 10, fontWeight: FontWeight.w600),
                       ),
                     ),
@@ -241,11 +242,94 @@ class _GalleryTile extends StatelessWidget {
       ),
     );
   }
+
+  String _relativeTime(DateTime createdAt) {
+    final diff = DateTime.now().difference(createdAt);
+    if (diff.inMinutes < 1) return '刚刚';
+    if (diff.inHours < 1) return '${diff.inMinutes} 分钟前';
+    if (diff.inDays < 1) return '${diff.inHours} 小时前';
+    return '${diff.inDays} 天前';
+  }
+}
+
+class _VideoThumb extends StatefulWidget {
+  const _VideoThumb({required this.path});
+
+  final String path;
+
+  @override
+  State<_VideoThumb> createState() => _VideoThumbState();
+}
+
+class _VideoThumbState extends State<_VideoThumb> {
+  VideoPlayerController? _controller;
+  bool _ready = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _init() async {
+    final file = File(widget.path);
+    if (!await file.exists()) return;
+    final controller = VideoPlayerController.file(file);
+    _controller = controller;
+    try {
+      await controller.initialize();
+      await controller.pause();
+      if (!mounted || _controller != controller) return;
+      setState(() => _ready = true);
+    } catch (_) {
+      await controller.dispose();
+      if (!mounted || _controller != controller) return;
+      _controller = null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = _controller;
+    if (_ready && controller != null) {
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          FittedBox(
+            fit: BoxFit.cover,
+            child: SizedBox(
+              width: controller.value.size.width,
+              height: controller.value.size.height,
+              child: VideoPlayer(controller),
+            ),
+          ),
+          const Center(
+            child: Icon(
+              Icons.play_circle_fill_rounded,
+              color: AppColors.primaryAccent,
+              size: 32,
+            ),
+          ),
+        ],
+      );
+    }
+    return Container(
+      alignment: Alignment.center,
+      color: Colors.white.withValues(alpha: 0.04),
+      child: const Icon(Icons.movie_creation_outlined, color: AppColors.muted),
+    );
+  }
 }
 
 class _PlayerOverlay extends StatefulWidget {
   const _PlayerOverlay({
-    required this.item,
+    required this.task,
     required this.confirmingDelete,
     required this.onClose,
     required this.onDownload,
@@ -254,7 +338,7 @@ class _PlayerOverlay extends StatefulWidget {
     required this.onConfirmDelete,
   });
 
-  final _GalleryItem item;
+  final VideoTask task;
   final bool confirmingDelete;
   final VoidCallback onClose;
   final VoidCallback onDownload;
@@ -267,60 +351,108 @@ class _PlayerOverlay extends StatefulWidget {
 }
 
 class _PlayerOverlayState extends State<_PlayerOverlay> {
-  bool _playing = false;
+  VideoPlayerController? _controller;
+  bool _ready = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initPlayer();
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _initPlayer() async {
+    final file = File(widget.task.localVideoPath);
+    if (!await file.exists()) return;
+    final controller = VideoPlayerController.file(file);
+    _controller = controller;
+    try {
+      await controller.initialize();
+      await controller.setLooping(true);
+      if (!mounted || _controller != controller) return;
+      setState(() => _ready = true);
+    } catch (_) {
+      await controller.dispose();
+      if (!mounted || _controller != controller) return;
+      _controller = null;
+    }
+  }
+
+  void _togglePlayback() {
+    final controller = _controller;
+    if (controller == null || !_ready) return;
+    setState(() {
+      if (controller.value.isPlaying) {
+        controller.pause();
+      } else {
+        controller.play();
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
+    final controller = _controller;
+    final playing = controller?.value.isPlaying ?? false;
+
     return Positioned.fill(
       child: Material(
         color: Colors.black,
         child: Stack(
           children: [
-            Container(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: widget.item.colors,
-                ),
-              ),
+            Positioned.fill(
+              child: _ready && controller != null
+                  ? FittedBox(
+                      fit: BoxFit.contain,
+                      child: SizedBox(
+                        width: controller.value.size.width,
+                        height: controller.value.size.height,
+                        child: VideoPlayer(controller),
+                      ),
+                    )
+                  : const Center(
+                      child: CircularProgressIndicator(
+                        color: AppColors.primaryAccent,
+                      ),
+                    ),
             ),
             Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  InkWell(
-                    borderRadius: BorderRadius.circular(32),
-                    onTap: () => setState(() => _playing = !_playing),
-                    child: ClipOval(
-                      child: BackdropFilter(
-                        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-                        child: Container(
-                          width: 64,
-                          height: 64,
-                          color: Colors.white.withValues(alpha: 0.15),
-                          child: Icon(
-                            _playing
-                                ? Icons.pause_rounded
-                                : Icons.play_arrow_rounded,
-                            color: AppColors.foreground,
-                            size: 36,
-                          ),
-                        ),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(32),
+                onTap: _togglePlayback,
+                child: ClipOval(
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                    child: Container(
+                      width: 64,
+                      height: 64,
+                      color: Colors.white.withValues(alpha: 0.15),
+                      child: Icon(
+                        playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                        color: AppColors.foreground,
+                        size: 36,
                       ),
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 48),
-                    child: Text(
-                      widget.item.prompt,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                          color: AppColors.muted, fontSize: 13, height: 1.5),
-                    ),
-                  ),
-                ],
+                ),
+              ),
+            ),
+            Positioned(
+              left: 24,
+              right: 24,
+              bottom: 104,
+              child: Text(
+                widget.task.prompt,
+                textAlign: TextAlign.center,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    color: AppColors.muted, fontSize: 13, height: 1.5),
               ),
             ),
             Positioned(
@@ -431,7 +563,7 @@ class _ConfirmDialog extends StatelessWidget {
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
               const SizedBox(height: 6),
               const Text(
-                '此操作将永久删除该视频的本地缓存文件。已导出至系统相册的副本不受影响。',
+                '此操作只会删除应用沙盒内的视频文件，不会影响已经导出到系统相册的副本。',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                     color: AppColors.muted, fontSize: 13, height: 1.5),
@@ -497,22 +629,4 @@ class _Toast extends StatelessWidget {
       ),
     );
   }
-}
-
-class _GalleryItem {
-  const _GalleryItem({
-    required this.id,
-    required this.prompt,
-    required this.date,
-    required this.duration,
-    required this.title,
-    required this.colors,
-  });
-
-  final String id;
-  final String prompt;
-  final String date;
-  final String duration;
-  final String title;
-  final List<Color> colors;
 }
