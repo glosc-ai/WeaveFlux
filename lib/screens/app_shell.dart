@@ -19,7 +19,6 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   int _currentIndex = 0;
-  Timer? _taskPollTimer;
 
   static const _pages = [
     CreateWorkspace(),
@@ -39,19 +38,18 @@ class _AppShellState extends State<AppShell> {
   @override
   void initState() {
     super.initState();
-    TaskStore.instance.load();
-    ModelCatalog.instance.refreshFromSavedCredentials();
-    TaskStore.instance.pollProcessingTasks();
-    _taskPollTimer = Timer.periodic(
-      const Duration(seconds: 30),
-      (_) => TaskStore.instance.pollProcessingTasks(),
+    unawaited(
+      TaskStore.instance.load().catchError((Object error, StackTrace stack) {
+        debugPrint('❌ [TaskStore Startup Error]: $error \n Stack: $stack');
+      }),
     );
-  }
-
-  @override
-  void dispose() {
-    _taskPollTimer?.cancel();
-    super.dispose();
+    unawaited(
+      ModelCatalog.instance
+          .refreshFromSavedCredentials()
+          .catchError((Object error, StackTrace stack) {
+        debugPrint('❌ [ModelCatalog Startup Error]: $error \n Stack: $stack');
+      }),
+    );
   }
 
   @override
