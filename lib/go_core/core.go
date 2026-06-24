@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -93,6 +94,8 @@ type dispatchAttempt struct {
 	Body any
 }
 
+const dispatchRequestTimeout = 25 * time.Second
+
 type videoDispatchPayload struct {
 	Model           string `json:"model"`
 	Prompt          string `json:"prompt"`
@@ -174,7 +177,10 @@ type modelCollection struct {
 //
 // gomobile bind has limited support for multiple non-error return values, so
 // this exported boundary returns a JSON string and lets Android/Dart decode it.
-func TestConnection(baseURL, apiKey string) string {
+func TestConnection(baseURL, apiKey string) (result string) {
+	defer recoverJSONResult(&result, func(err string) string {
+		return encodeConnectionResult(false, err)
+	})
 	resp, errMsg := requestModels(baseURL, apiKey, 20*time.Second)
 	if errMsg != "" {
 		return encodeConnectionResult(false, errMsg)
@@ -184,7 +190,10 @@ func TestConnection(baseURL, apiKey string) string {
 }
 
 // FetchModels returns the available OpenAI-compatible model IDs as JSON.
-func FetchModels(baseURL, apiKey string) string {
+func FetchModels(baseURL, apiKey string) (result string) {
+	defer recoverJSONResult(&result, func(err string) string {
+		return encodeModelsResult(false, nil, nil, err, "")
+	})
 	collection, errMsg := fetchModelIDs(baseURL, apiKey)
 	if errMsg != "" {
 		return encodeModelsResult(false, nil, nil, errMsg, "")
@@ -196,7 +205,8 @@ func FetchModels(baseURL, apiKey string) string {
 }
 
 // DispatchVideoTask sends a T2V/I2V video generation request.
-func DispatchVideoTask(baseURL, apiKey, model, prompt, size, motionScale, imageBase64 string) string {
+func DispatchVideoTask(baseURL, apiKey, model, prompt, size, motionScale, imageBase64 string) (result string) {
+	defer recoverJSONResult(&result, encodeDispatchPanic)
 	payload := videoDispatchPayload{
 		Model:       model,
 		Prompt:      prompt,
@@ -213,7 +223,8 @@ func DispatchVideoTask(baseURL, apiKey, model, prompt, size, motionScale, imageB
 
 // DispatchVideoTaskV2 accepts a JSON payload so Dart and Go can exchange rich
 // request data while keeping the gomobile boundary to primitive strings.
-func DispatchVideoTaskV2(baseURL, apiKey, payloadJSON string) string {
+func DispatchVideoTaskV2(baseURL, apiKey, payloadJSON string) (result string) {
+	defer recoverJSONResult(&result, encodeDispatchPanic)
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	apiKey = strings.TrimSpace(apiKey)
 
@@ -306,7 +317,8 @@ func DispatchVideoTaskV2(baseURL, apiKey, payloadJSON string) string {
 }
 
 // DispatchImageTask sends an OpenAI-compatible image generation request.
-func DispatchImageTask(baseURL, apiKey, payloadJSON string) string {
+func DispatchImageTask(baseURL, apiKey, payloadJSON string) (result string) {
+	defer recoverJSONResult(&result, encodeDispatchPanic)
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	apiKey = strings.TrimSpace(apiKey)
 
@@ -352,8 +364,8 @@ func DispatchImageTask(baseURL, apiKey, payloadJSON string) string {
 			Body: body,
 		},
 		{
-			Path: "/chat/completions",
-			Body: buildImageChatCompletionRequest(payload, body),
+			Path: "/images/generations/",
+			Body: body,
 		},
 	}
 
@@ -399,7 +411,10 @@ func videoDispatchAttempts(videoBody videoGenerationRequest, chatBody chatComple
 
 // QueryTask checks a remote async generation task. It intentionally tries a
 // small set of common OpenAI-compatible provider paths.
-func QueryTask(baseURL, apiKey, taskID string) string {
+func QueryTask(baseURL, apiKey, taskID string) (result string) {
+	defer recoverJSONResult(&result, func(err string) string {
+		return encodeTaskStatusResult(false, "", "", "", err)
+	})
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	apiKey = strings.TrimSpace(apiKey)
 	taskID = strings.TrimSpace(taskID)
@@ -439,26 +454,34 @@ func QueryTask(baseURL, apiKey, taskID string) string {
 // video task. It uses the new-api task fetch route requested by the Android
 // bridge and reports terminal states through GoStatusListener.
 func StartPollingTask(baseURL, apiKey, taskID string, listener GoStatusListener) {
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	apiKey = strings.TrimSpace(apiKey)
-	taskID = strings.TrimSpace(taskID)
-
-	if listener == nil {
-		return
-	}
-	if baseURL == "" || apiKey == "" || taskID == "" {
-		listener.OnStatusChanged("failed", "", "Missing polling parameters")
-		return
-	}
-	if _, loaded := activePollingTasks.LoadOrStore(taskID, true); loaded {
-		return
-	}
-
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			errMsg := fmt.Sprintf("Go Native Panic: %v", recovered)
+			log.Printf("[Go Native Panic Caught]: %s", errMsg)
+			safeNotify(listener, "failed", "", errMsg)
+		}
+	}()
 	go func() {
+		baseURL := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+		apiKey := strings.TrimSpace(apiKey)
+		taskID := strings.TrimSpace(taskID)
+
+		if listener == nil {
+			return
+		}
+		if baseURL == "" || apiKey == "" || taskID == "" {
+			safeNotify(listener, "failed", "", "Missing polling parameters")
+			return
+		}
+		if _, loaded := activePollingTasks.LoadOrStore(taskID, true); loaded {
+			return
+		}
 		defer activePollingTasks.Delete(taskID)
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				listener.OnStatusChanged("failed", "", fmt.Sprintf("Polling panic: %v", recovered))
+				errMsg := fmt.Sprintf("Go Native Panic: %v", recovered)
+				log.Printf("[Go Native Panic Caught]: %s", errMsg)
+				safeNotify(listener, "failed", "", errMsg)
 			}
 		}()
 
@@ -475,10 +498,10 @@ func StartPollingTask(baseURL, apiKey, taskID string, listener GoStatusListener)
 				status = normalizeRemoteStatus(status)
 				switch status {
 				case "completed":
-					listener.OnStatusChanged("success", videoURL, "")
+					safeNotify(listener, "success", videoURL, "")
 					return
 				case "failed":
-					listener.OnStatusChanged("failed", videoURL, "Remote task failed")
+					safeNotify(listener, "failed", videoURL, "Remote task failed")
 					return
 				}
 			}
@@ -493,7 +516,7 @@ func StartPollingTask(baseURL, apiKey, taskID string, listener GoStatusListener)
 		} else {
 			lastErr = "Polling timed out: " + lastErr
 		}
-		listener.OnStatusChanged("failed", "", lastErr)
+		safeNotify(listener, "failed", "", lastErr)
 	}()
 }
 
@@ -530,6 +553,30 @@ func normalizeRemoteStatus(status string) string {
 	default:
 		return "processing"
 	}
+}
+
+func recoverJSONResult(result *string, encoder func(string) string) {
+	if recovered := recover(); recovered != nil {
+		errMsg := fmt.Sprintf("Go Native Panic: %v", recovered)
+		log.Printf("[Go Native Panic Caught]: %s", errMsg)
+		*result = encoder(errMsg)
+	}
+}
+
+func encodeDispatchPanic(err string) string {
+	return encodeDispatchResult("", "", "", "", err)
+}
+
+func safeNotify(listener GoStatusListener, status, videoURL, errStr string) {
+	if listener == nil {
+		return
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("[Go Native Panic Caught]: listener callback failed: %v", recovered)
+		}
+	}()
+	listener.OnStatusChanged(status, videoURL, errStr)
 }
 
 func fetchModelIDs(baseURL, apiKey string) (modelCollection, string) {
@@ -743,7 +790,7 @@ func dispatchToEndpoint(baseURL, apiKey string, attempt dispatchAttempt) (string
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: dispatchRequestTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", "", false, fmt.Sprintf("Network error: %v", err)
@@ -886,7 +933,12 @@ func buildImageChatCompletionRequest(payload imageDispatchPayload, body imageGen
 		"",
 		"Return either a JSON object containing task_id, url, or b64_json.",
 	}, "\n")
-	message := chatMessage{Role: "user", Content: text}
+	message := chatMessage{
+		Role: "user",
+		Content: []multimodalContent{
+			{Type: "text", Text: text},
+		},
+	}
 	if body.Image != "" {
 		message.Content = []multimodalContent{
 			{Type: "text", Text: text},

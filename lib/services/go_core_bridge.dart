@@ -1,3 +1,4 @@
+﻿import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -20,6 +21,20 @@ class GoCoreBridge {
         method,
         arguments,
       );
+    } on PlatformException catch (e, stack) {
+      debugPrint('❌ [MethodChannel Error]: $e \n Stack: $stack');
+      return <String, Object?>{
+        'success': false,
+        'error': e.message ?? e.code,
+        'debug': e.details?.toString() ?? '',
+        'task_id': '',
+        'status': '',
+        'result_url': '',
+        'result_b64': '',
+        'models': <String>[],
+        'video_models': <String>[],
+        'image_models': <String>[],
+      };
     } catch (e, stack) {
       debugPrint('❌ [MethodChannel Error]: $e \n Stack: $stack');
       rethrow;
@@ -38,13 +53,16 @@ class GoCoreBridge {
       if (raw is! Map) return null;
       final handler = _taskStatusHandler;
       if (handler == null) return null;
-      await handler(
-        NativeTaskStatusUpdate(
-          taskId: raw['task_id'] as String? ?? '',
-          status: raw['status'] as String? ?? '',
-          videoUrl: raw['video_url'] as String? ?? '',
-          error: raw['error'] as String? ?? '',
-        ),
+      final update = NativeTaskStatusUpdate(
+        taskId: raw['task_id'] as String? ?? '',
+        status: raw['status'] as String? ?? '',
+        videoUrl: raw['video_url'] as String? ?? '',
+        error: raw['error'] as String? ?? '',
+      );
+      unawaited(
+        handler(update).catchError((Object error, StackTrace stack) {
+          debugPrint('Task status callback error: $error\nStack: $stack');
+        }),
       );
       return null;
     });
@@ -156,6 +174,18 @@ class GoCoreBridge {
         'baseUrl': baseUrl,
         'apiKey': apiKey,
         'payload': jsonEncode(payload),
+      },
+    ).timeout(
+      const Duration(seconds: 25),
+      onTimeout: () {
+        return <String, Object?>{
+          'success': false,
+          'task_id': '',
+          'status': '',
+          'result_url': '',
+          'result_b64': '',
+          'error': 'Go core request timed out after 25 seconds',
+        };
       },
     );
 

@@ -11,14 +11,14 @@ void main() {
       FlutterError.onError = (details) {
         FlutterError.presentError(details);
         debugPrint(
-          '❌ [Flutter Error]: ${details.exceptionAsString()} \n'
+          'Flutter error: ${details.exceptionAsString()} \n'
           'Stack: ${details.stack}',
         );
       };
       runApp(const WeaveFluxApp());
     },
     (error, stack) {
-      debugPrint('❌ [Uncaught Dart Error]: $error \n Stack: $stack');
+      debugPrint('Uncaught Dart error: $error \n Stack: $stack');
     },
   );
 }

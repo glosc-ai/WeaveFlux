@@ -2,16 +2,20 @@ package com.example.weaveflux
 
 import android.content.ContentValues
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
 
 class MainActivity : FlutterActivity() {
     private val channelName = "weaveflux/go_core"
     private val mediaStoreChannelName = "weaveflux/media_store"
+    private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var goCoreChannel: MethodChannel
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -53,7 +57,19 @@ class MainActivity : FlutterActivity() {
                         call.argument<String>("apiKey").orEmpty(),
                         call.argument<String>("payload").orEmpty(),
                     )
-                    runGoBridgeCall(result) {
+                    runGoBridgeCall(
+                        result,
+                        timeoutMs = 25_000L,
+                        timeoutPayload = mapOf(
+                            "success" to false,
+                            "error" to "Go core request timed out after 25 seconds",
+                            "debug" to "",
+                            "task_id" to "",
+                            "status" to "",
+                            "result_url" to "",
+                            "result_b64" to "",
+                        ),
+                    ) {
                         invokeGoJsonMethod("dispatchImageTask", args)
                     }
                 }
@@ -102,6 +118,24 @@ class MainActivity : FlutterActivity() {
                         }
                     }.start()
                 }
+                "exportImageToGallery" -> {
+                    val localPath = call.argument<String>("localPath").orEmpty()
+                    val displayName = call.argument<String>("displayName").orEmpty()
+                    Thread {
+                        try {
+                            exportImageToGallery(localPath, displayName)
+                            runOnUiThread { result.success(null) }
+                        } catch (error: Throwable) {
+                            runOnUiThread {
+                                result.error(
+                                    "EXPORT_FAILED",
+                                    error.message ?: "Failed to export image",
+                                    null,
+                                )
+                            }
+                        }
+                    }.start()
+                }
                 else -> result.notImplemented()
             }
         }
@@ -114,14 +148,48 @@ class MainActivity : FlutterActivity() {
         val safeName = sanitizeVideoName(
             if (displayName.isBlank()) source.name else displayName,
         )
+        copyAssetToMediaStore(
+            source = source,
+            displayName = safeName,
+            mimeType = "video/mp4",
+            relativePath = "Movies/WeaveFlux",
+            collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+            pendingColumn = MediaStore.Video.Media.IS_PENDING,
+        )
+    }
+
+    private fun exportImageToGallery(localPath: String, displayName: String) {
+        val source = File(localPath)
+        require(source.exists() && source.isFile) { "Image file does not exist: $localPath" }
+
+        val safeName = sanitizeImageName(
+            if (displayName.isBlank()) source.name else displayName,
+        )
+        copyAssetToMediaStore(
+            source = source,
+            displayName = safeName,
+            mimeType = imageMimeType(safeName),
+            relativePath = "Pictures/WeaveFlux",
+            collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+            pendingColumn = MediaStore.Images.Media.IS_PENDING,
+        )
+    }
+
+    private fun copyAssetToMediaStore(
+        source: File,
+        displayName: String,
+        mimeType: String,
+        relativePath: String,
+        collection: android.net.Uri,
+        pendingColumn: String,
+    ) {
         val resolver = applicationContext.contentResolver
-        val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         val values = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, safeName)
-            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-            put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/WeaveFlux")
+            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Video.Media.IS_PENDING, 1)
+                put(pendingColumn, 1)
             }
         }
 
@@ -136,7 +204,7 @@ class MainActivity : FlutterActivity() {
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val completed = ContentValues().apply {
-                    put(MediaStore.Video.Media.IS_PENDING, 0)
+                    put(pendingColumn, 0)
                 }
                 resolver.update(uri, completed, null, null)
             }
@@ -152,17 +220,68 @@ class MainActivity : FlutterActivity() {
         return if (withFallback.lowercase().endsWith(".mp4")) withFallback else "$withFallback.mp4"
     }
 
+    private fun sanitizeImageName(name: String): String {
+        val cleaned = name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
+        val withFallback = if (cleaned.isBlank()) "weaveflux_image.png" else cleaned
+        val lower = withFallback.lowercase()
+        return if (lower.endsWith(".png") || lower.endsWith(".jpg") ||
+            lower.endsWith(".jpeg") || lower.endsWith(".webp")
+        ) {
+            withFallback
+        } else {
+            "$withFallback.png"
+        }
+    }
+
+    private fun imageMimeType(name: String): String {
+        val lower = name.lowercase()
+        return when {
+            lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+            lower.endsWith(".webp") -> "image/webp"
+            else -> "image/png"
+        }
+    }
+
     private fun invokeGoJsonMethod(methodName: String, baseUrl: String, apiKey: String): Map<String, Any> {
         return invokeGoJsonMethod(methodName, listOf(baseUrl, apiKey))
     }
 
-    private fun runGoBridgeCall(result: MethodChannel.Result, block: () -> Map<String, Any>) {
+    private fun runGoBridgeCall(
+        result: MethodChannel.Result,
+        timeoutMs: Long = 0L,
+        timeoutPayload: Map<String, Any>? = null,
+        block: () -> Map<String, Any>,
+    ) {
+        val completed = AtomicBoolean(false)
+        if (timeoutMs > 0L) {
+            Thread {
+                try {
+                    Thread.sleep(timeoutMs)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+                if (completed.compareAndSet(false, true)) {
+                    if (timeoutPayload != null) {
+                        result.success(timeoutPayload)
+                    } else {
+                        result.error(
+                            "GO_TIMEOUT",
+                            "Go core request timed out after ${timeoutMs / 1000} seconds",
+                            null,
+                        )
+                    }
+                }
+            }.start()
+        }
+
         Thread {
             try {
                 val payload = block()
-                runOnUiThread { result.success(payload) }
+                if (completed.compareAndSet(false, true)) {
+                    result.success(payload)
+                }
             } catch (exception: Throwable) {
-                runOnUiThread {
+                if (completed.compareAndSet(false, true)) {
                     result.error(
                         "GO_ERROR",
                         exception.message ?: exception.toString(),
@@ -214,16 +333,24 @@ class MainActivity : FlutterActivity() {
                 val status = args?.getOrNull(0) as? String ?: ""
                 val videoUrl = args?.getOrNull(1) as? String ?: ""
                 val errStr = args?.getOrNull(2) as? String ?: ""
-                runOnUiThread {
-                    goCoreChannel.invokeMethod(
-                        "taskStatusChanged",
-                        mapOf(
-                            "task_id" to taskId,
-                            "status" to status,
-                            "video_url" to videoUrl,
-                            "error" to errStr,
-                        ),
-                    )
+                mainHandler.post {
+                    try {
+                        goCoreChannel.invokeMethod(
+                            "taskStatusChanged",
+                            mapOf(
+                                "task_id" to taskId,
+                                "status" to status,
+                                "video_url" to videoUrl,
+                                "error" to errStr,
+                            ),
+                        )
+                    } catch (exception: Throwable) {
+                        android.util.Log.e(
+                            "WeaveFlux",
+                            "Failed to deliver task status callback",
+                            exception,
+                        )
+                    }
                 }
             }
             null
