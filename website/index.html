@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WeaveFlux 织影 - Android AI 视频生成 App</title>
+    <meta
+      name="description"
+      content="WeaveFlux 织影是一款纯客户端 Android AI 视频生成 App。自备 Base URL 与 API Key，兼容 OpenAI 风格视频接口，凭据仅在本地加密保存。"
+    >
+    <meta property="og:title" content="WeaveFlux 织影 - Android AI 视频生成 App">
+    <meta
+      property="og:description"
+      content="文生视频、图生视频、任务轨道和私密画廊。无账号、无自建服务器，AI 接口由你自己配置。"
+    >
+    <meta property="og:type" content="website">
+    <meta property="og:image" content="assets/app-logo.png">
+    <link rel="icon" href="assets/app-logo.png">
+    <link rel="apple-touch-icon" href="assets/app-logo.png">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header" data-site-header>
+      <a class="brand" href="#top" aria-label="WeaveFlux 首页">
+        <img src="assets/app-logo.png" alt="" width="40" height="40">
+        <span>WeaveFlux</span>
+      </a>
+      <button class="menu-button" type="button" aria-expanded="false" aria-controls="site-nav" data-menu-button>
+        <span></span>
+        <span></span>
+        <span></span>
+        <span class="sr-only">打开导航</span>
+      </button>
+      <nav class="site-nav" id="site-nav" data-site-nav aria-label="主导航">
+        <a href="#screens">界面</a>
+        <a href="#features">功能</a>
+        <a href="#privacy">本地优先</a>
+        <a href="#workflow">流程</a>
+        <a href="#faq">FAQ</a>
+        <a class="nav-cta" href="https://github.com/glosc-ai/WeaveFlux/releases" target="_blank" rel="noopener">
+          下载
+        </a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Android AI Video Studio</p>
+          <h1>WeaveFlux 织影</h1>
+          <p class="hero-lede">
+            在 Android 设备上创作 AI 视频。输入提示词、加入参考图、跟踪生成任务，
+            再把作品留在私密画廊中管理。模型端点和密钥由你自己配置。
+          </p>
+          <div class="hero-actions" id="download">
+            <a class="button primary" href="https://github.com/glosc-ai/WeaveFlux/releases" target="_blank" rel="noopener">
+              下载 App
+            </a>
+            <a class="button secondary" href="https://one.gloscai.com/keys" target="_blank" rel="noopener">
+              获取 API Key
+            </a>
+            <a class="button secondary" href="#features">查看功能</a>
+          </div>
+          <dl class="hero-stats" aria-label="产品重点">
+            <div>
+              <dt>0</dt>
+              <dd>自建后端</dd>
+            </div>
+            <div>
+              <dt>BYO</dt>
+              <dd>Base URL / Key</dd>
+            </div>
+            <div>
+              <dt>4</dt>
+              <dd>核心工作区</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="hero-visual" aria-label="WeaveFlux 创作工作台预览">
+          <div class="phone-shell main-phone">
+            <div class="phone-top">
+              <span></span>
+            </div>
+            <div class="app-preview workspace-preview">
+              <div class="app-bar">
+                <div>
+                  <small>创建任务</small>
+                  <strong>开始织影</strong>
+                </div>
+                <span class="status-dot"></span>
+              </div>
+              <div class="segment">
+                <span class="active">文生视频</span>
+                <span>图生视频</span>
+              </div>
+              <div class="preview-strip" aria-hidden="true">
+                <span class="preview-frame frame-a"></span>
+                <span class="preview-frame frame-b"></span>
+                <span class="preview-frame frame-c"></span>
+              </div>
+              <div class="prompt-box">
+                <span>Prompt</span>
+                <p>雨夜霓虹街口，一位独行者穿过水汽，镜头缓慢推进，电影感光影。</p>
+              </div>
+              <div class="control-row">
+                <span>Model</span>
+                <strong>video-generation</strong>
+              </div>
+              <div class="control-grid">
+                <div><span>比例</span><strong>16:9</strong></div>
+                <div><span>动态</span><strong>中</strong></div>
+                <div><span>时长</span><strong>5s</strong></div>
+                <div><span>质量</span><strong>HD</strong></div>
+              </div>
+              <div class="render-status" aria-hidden="true">
+                <span></span>
+                <strong>Task ready</strong>
+                <em>OpenAI compatible</em>
+              </div>
+              <button class="mock-primary" type="button">开始织影</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section intro-band" aria-label="产品定位">
+        <div class="section-inner split">
+          <div>
+            <p class="eyebrow">为移动创作而做</p>
+            <h2>把视频生成流程收进一个本地 App。</h2>
+          </div>
+          <p>
+            WeaveFlux 聚焦轻量、私密、可替换端点的 AI 视频工作流。它不维护账号系统，
+            不托管你的作品，也不把 API 凭据交给自建服务；你配置兼容 OpenAI 结构的服务后即可开始创作。
+          </p>
+        </div>
+      </section>
+
+      <section class="section screens-section" id="screens">
+        <div class="section-inner">
+          <div class="section-heading">
+            <p class="eyebrow">界面预览</p>
+            <h2>四个区域覆盖从创作到保存的完整路径。</h2>
+          </div>
+          <div class="screens-grid" aria-label="WeaveFlux 应用界面预览">
+            <article class="screen-card">
+              <div class="mini-screen workspace-mini" aria-hidden="true">
+                <div class="mini-app-bar">
+                  <span>开始织影</span>
+                  <i></i>
+                </div>
+                <div class="mini-mode">
+                  <b>视频生成</b>
+                  <span>图片生成</span>
+                </div>
+                <div class="mini-video-canvas">
+                  <div class="mini-horizon"></div>
+                  <div class="mini-subject"></div>
+                  <div class="mini-scanline"></div>
+                </div>
+                <div class="mini-input">
+                  <small>Prompt</small>
+                  <p>雨夜霓虹街口，电影感推镜，水面反射。</p>
+                </div>
+                <div class="mini-param-grid">
+                  <span>16:9</span>
+                  <span>5s</span>
+                  <span>HD</span>
+                </div>
+                <div class="mini-generate">开始织影</div>
+              </div>
+              <h3>创作工作台</h3>
+              <p>文生视频与图生视频切换，集中填写提示词、模型和画面参数。</p>
+            </article>
+            <article class="screen-card">
+              <div class="mini-screen orbit-mini" aria-hidden="true">
+                <div class="mini-app-bar">
+                  <span>任务轨道</span>
+                  <i></i>
+                </div>
+                <div class="orbit-card active-task">
+                  <div>
+                    <strong>霓虹雨街</strong>
+                    <small>生成中 · 68%</small>
+                  </div>
+                  <span class="orbit-progress"></span>
+                </div>
+                <div class="orbit-card done-task">
+                  <div>
+                    <strong>海岸日落</strong>
+                    <small>已完成 · 可预览</small>
+                  </div>
+                </div>
+                <div class="orbit-card failed-task">
+                  <div>
+                    <strong>角色转场</strong>
+                    <small>HTTP 429 · 可重试</small>
+                  </div>
+                </div>
+                <div class="orbit-log">
+                  <code>task_id: wf_2048</code>
+                  <code>polling /videos/tasks</code>
+                </div>
+              </div>
+              <h3>任务轨道</h3>
+              <p>查看生成中、失败和完成任务，保留原厂错误信息并支持重试。</p>
+            </article>
+            <article class="screen-card">
+              <div class="mini-screen gallery-mini" aria-hidden="true">
+                <div class="mini-app-bar">
+                  <span>私密画廊</span>
+                  <i></i>
+                </div>
+                <div class="gallery-toolbar">
+                  <span>全部</span>
+                  <span>视频</span>
+                  <span>图片</span>
+                </div>
+                <div class="masonry rich-masonry">
+                  <i><b>00:05</b></i>
+                  <i><b>00:08</b></i>
+                  <i><b>HD</b></i>
+                  <i><b>00:04</b></i>
+                </div>
+                <div class="gallery-player">
+                  <span></span>
+                  <strong>Preview</strong>
+                </div>
+              </div>
+              <h3>私密画廊</h3>
+              <p>在本地管理生成作品，预览、删除或导出到系统相册目录。</p>
+            </article>
+            <article class="screen-card">
+              <div class="mini-screen settings-mini" aria-hidden="true">
+                <div class="mini-app-bar">
+                  <span>端点配置</span>
+                  <i></i>
+                </div>
+                <label class="settings-field">
+                  <span>Base URL</span>
+                  <b>https://one.gloscai.com/v1</b>
+                </label>
+                <label class="settings-field">
+                  <span>API Key</span>
+                  <b>••••••••••••••</b>
+                </label>
+                <label class="settings-field compact">
+                  <span>Model</span>
+                  <b>video-generation</b>
+                </label>
+                <div class="secure-note">
+                  <span></span>
+                  <strong>KeyStore 加密</strong>
+                </div>
+                <div class="release-chip">GitHub Release · v0.1.3</div>
+              </div>
+              <h3>端点配置</h3>
+              <p>配置 Base URL、API Key 和默认模型，并从 GitHub Release 检查更新。</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="features">
+        <div class="section-inner">
+          <div class="section-heading">
+            <p class="eyebrow">功能一览</p>
+            <h2>核心功能围绕真实创作链路展开。</h2>
+          </div>
+          <div class="feature-panel">
+            <div class="feature-tabs" role="tablist" aria-label="功能模块">
+              <button class="feature-tab is-active" type="button" role="tab" aria-selected="true" data-feature="create">
+                创作
+              </button>
+              <button class="feature-tab" type="button" role="tab" aria-selected="false" data-feature="queue">
+                任务
+              </button>
+              <button class="feature-tab" type="button" role="tab" aria-selected="false" data-feature="gallery">
+                画廊
+              </button>
+              <button class="feature-tab" type="button" role="tab" aria-selected="false" data-feature="settings">
+                设置
+              </button>
+            </div>
+            <div class="feature-content" data-feature-content data-active-feature="create">
+              <div>
+                <p class="feature-kicker">创作工作台</p>
+                <h3>把提示词、参考图和生成参数放在同一屏。</h3>
+                <p>
+                  支持文生视频与图生视频工作流，保留模型名、画面比例、动态幅度等常用控制项。
+                </p>
+              </div>
+              <div class="feature-visual feature-diagram feature-create" aria-hidden="true" data-feature-visual>
+                <div class="diagram-phone">
+                  <div class="diagram-topline"></div>
+                  <div class="diagram-canvas">
+                    <span></span>
+                  </div>
+                  <div class="diagram-prompt"></div>
+                  <div class="diagram-controls">
+                    <i></i><i></i><i></i>
+                  </div>
+                </div>
+                <div class="diagram-side">
+                  <span>Prompt</span>
+                  <strong>Video params</strong>
+                  <em>Generate</em>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section soft-band" id="privacy">
+        <div class="section-inner">
+          <div class="section-heading">
+            <p class="eyebrow">本地优先</p>
+            <h2>你的端点、密钥和作品由你掌控。</h2>
+          </div>
+          <div class="principles">
+            <article>
+              <span>01</span>
+              <h3>无自建远程服务</h3>
+              <p>应用直接从本机向你配置的 OpenAI-compatible endpoint 发起请求。</p>
+            </article>
+            <article>
+              <span>02</span>
+              <h3>BYO Key 模式</h3>
+              <p>Base URL、API Key 和模型由用户自行提供，适合接入不同兼容服务。</p>
+            </article>
+            <article>
+              <span>03</span>
+              <h3>本地加密保存</h3>
+              <p>敏感配置通过 Android KeyStore 相关能力加密保存，避免明文落盘。</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="workflow">
+        <div class="section-inner">
+          <div class="section-heading">
+            <p class="eyebrow">使用流程</p>
+            <h2>配置一次，然后专注生成。</h2>
+          </div>
+          <div class="timeline">
+            <div>
+              <span>1</span>
+              <h3>配置端点</h3>
+              <p>在设置页填写 HTTPS Base URL、API Key 和默认视频模型。</p>
+            </div>
+            <div>
+              <span>2</span>
+              <h3>创建任务</h3>
+              <p>输入提示词或选择参考图片，确认参数后将视频任务加入队列。</p>
+            </div>
+            <div>
+              <span>3</span>
+              <h3>保存作品</h3>
+              <p>生成完成后在私密画廊预览，并按需导出到 Movies/WeaveFlux。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section setup-band" id="setup">
+        <div class="section-inner setup-grid">
+          <div>
+            <p class="eyebrow">安装准备</p>
+            <h2>准备一个兼容视频生成接口的模型服务。</h2>
+            <p>
+              WeaveFlux 面向 OpenAI 风格接口结构设计，视频生成请求会投递到用户配置的服务。
+              安装包通过 GitHub Releases 发布，应用内也可检查新版本。
+            </p>
+          </div>
+          <div class="setup-box" aria-label="接口结构示意">
+            <span>Base URL</span>
+            <code>https://your-provider.example/v1</code>
+            <span>Video endpoint</span>
+            <code>/videos/generations</code>
+            <span>Release</span>
+            <code>github.com/glosc-ai/WeaveFlux/releases</code>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="faq">
+        <div class="section-inner faq-layout">
+          <div class="section-heading">
+            <p class="eyebrow">FAQ</p>
+            <h2>常见问题</h2>
+          </div>
+          <div class="faq-list">
+            <details open>
+              <summary>WeaveFlux 是否需要注册账号？</summary>
+              <p>不需要。当前产品设计不包含账号、会员或充值流程。</p>
+            </details>
+            <details>
+              <summary>API Key 会上传到哪里？</summary>
+              <p>不会上传到 WeaveFlux 的服务器。应用没有自建远程服务，凭据只用于从本机请求你配置的模型端点。</p>
+            </details>
+            <details>
+              <summary>可以使用自己的模型服务吗？</summary>
+              <p>可以。只要服务兼容 OpenAI 风格的视频生成接口结构，就可以在设置页填写 Base URL、API Key 和模型名称。</p>
+            </details>
+            <details>
+              <summary>生成的视频保存在哪里？</summary>
+              <p>临时和本地作品优先保存在应用私有目录；导出到系统相册时使用 Movies/WeaveFlux 目录。</p>
+            </details>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div>
+        <img src="assets/app-logo.png" alt="" width="36" height="36">
+        <span>WeaveFlux 织影</span>
+      </div>
+      <p>Client-only Android AI video generation.</p>
+    </footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>
