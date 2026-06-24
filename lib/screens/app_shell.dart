@@ -1,9 +1,5 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
-import '../services/model_catalog.dart';
-import '../services/task_store.dart';
 import '../theme/app_theme.dart';
 import 'create_workspace.dart';
 import 'private_gallery.dart';
@@ -19,37 +15,21 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   int _currentIndex = 0;
-
-  static const _pages = [
-    CreateWorkspace(),
-    TaskOrbit(),
-    PrivateGallery(),
-    SettingsPanel(),
-  ];
+  final Set<int> _visitedPages = <int>{0};
 
   void _openSettings() {
-    setState(() => _currentIndex = 3);
+    _selectPage(3);
   }
 
   void _openTasks() {
-    setState(() => _currentIndex = 1);
+    _selectPage(1);
   }
 
-  @override
-  void initState() {
-    super.initState();
-    unawaited(
-      TaskStore.instance.load().catchError((Object error, StackTrace stack) {
-        debugPrint('❌ [TaskStore Startup Error]: $error \n Stack: $stack');
-      }),
-    );
-    unawaited(
-      ModelCatalog.instance
-          .refreshFromSavedCredentials()
-          .catchError((Object error, StackTrace stack) {
-        debugPrint('❌ [ModelCatalog Startup Error]: $error \n Stack: $stack');
-      }),
-    );
+  void _selectPage(int index) {
+    setState(() {
+      _currentIndex = index;
+      _visitedPages.add(index);
+    });
   }
 
   @override
@@ -62,25 +42,35 @@ class _AppShellState extends State<AppShell> {
             Expanded(
               child: IndexedStack(
                 index: _currentIndex,
-                children: [
-                  CreateWorkspace(
-                    onOpenSettings: _openSettings,
-                    onOpenTasks: _openTasks,
-                  ),
-                  _pages[1],
-                  _pages[2],
-                  _pages[3],
-                ],
+                children: List<Widget>.generate(
+                  4,
+                  (index) => _visitedPages.contains(index)
+                      ? _buildPage(index)
+                      : const SizedBox.shrink(),
+                ),
               ),
             ),
             _BottomNav(
               currentIndex: _currentIndex,
-              onChanged: (index) => setState(() => _currentIndex = index),
+              onChanged: _selectPage,
             ),
           ],
         ),
       ),
     );
+  }
+
+  Widget _buildPage(int index) {
+    return switch (index) {
+      0 => CreateWorkspace(
+          onOpenSettings: _openSettings,
+          onOpenTasks: _openTasks,
+        ),
+      1 => const TaskOrbit(),
+      2 => const PrivateGallery(),
+      3 => const SettingsPanel(),
+      _ => const SizedBox.shrink(),
+    };
   }
 }
 
@@ -96,10 +86,10 @@ class _BottomNav extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const items = [
-      _NavItem('创作', Icons.auto_awesome),
-      _NavItem('任务', Icons.track_changes),
-      _NavItem('画廊', Icons.grid_view_rounded),
-      _NavItem('设置', Icons.settings_outlined),
+      _NavItem('\u521b\u4f5c', Icons.auto_awesome),
+      _NavItem('\u4efb\u52a1', Icons.track_changes),
+      _NavItem('\u753b\u5eca', Icons.grid_view_rounded),
+      _NavItem('\u8bbe\u7f6e', Icons.settings_outlined),
     ];
 
     return Container(

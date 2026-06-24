@@ -7,6 +7,24 @@ import '../services/model_catalog.dart';
 import '../theme/app_theme.dart';
 import 'create_workspace.dart';
 
+List<String> _dedupeModels(List<String> models) {
+  final seen = <String>{};
+  final result = <String>[];
+  for (final raw in models) {
+    final model = raw.trim();
+    if (model.isEmpty || !seen.add(model)) continue;
+    result.add(model);
+  }
+  return result;
+}
+
+String? _validSelectedModel(String? selected, List<String> models) {
+  if (selected == null) return null;
+  return models.where((model) => model == selected).length == 1
+      ? selected
+      : null;
+}
+
 class SettingsPanel extends StatefulWidget {
   const SettingsPanel({super.key});
 
@@ -63,11 +81,19 @@ class _SettingsPanelState extends State<SettingsPanel> {
 
   void _syncModelCatalog() {
     if (!mounted) return;
+    final videoModels = _dedupeModels(ModelCatalog.instance.videoModels.value);
+    final imageModels = _dedupeModels(ModelCatalog.instance.imageModels.value);
     setState(() {
-      _videoModels = ModelCatalog.instance.videoModels.value;
-      _imageModels = ModelCatalog.instance.imageModels.value;
-      _selectedVideoModel = ModelCatalog.instance.selectedVideoModel.value;
-      _selectedImageModel = ModelCatalog.instance.selectedImageModel.value;
+      _videoModels = videoModels;
+      _imageModels = imageModels;
+      _selectedVideoModel = _validSelectedModel(
+        ModelCatalog.instance.selectedVideoModel.value,
+        videoModels,
+      );
+      _selectedImageModel = _validSelectedModel(
+        ModelCatalog.instance.selectedImageModel.value,
+        imageModels,
+      );
     });
   }
 
@@ -78,8 +104,8 @@ class _SettingsPanelState extends State<SettingsPanel> {
     if (!mounted) return;
 
     setState(() {
-      _videoModels = ModelCatalog.instance.videoModels.value;
-      _imageModels = ModelCatalog.instance.imageModels.value;
+      _videoModels = _dedupeModels(ModelCatalog.instance.videoModels.value);
+      _imageModels = _dedupeModels(ModelCatalog.instance.imageModels.value);
       if (baseUrl != null && baseUrl.isNotEmpty) {
         _baseUrlController.text = baseUrl;
       }
@@ -93,8 +119,14 @@ class _SettingsPanelState extends State<SettingsPanel> {
           apiKey: _apiKeyController.text.trim(),
         ).cacheKey;
       }
-      _selectedVideoModel = ModelCatalog.instance.selectedVideoModel.value;
-      _selectedImageModel = ModelCatalog.instance.selectedImageModel.value;
+      _selectedVideoModel = _validSelectedModel(
+        ModelCatalog.instance.selectedVideoModel.value,
+        _videoModels,
+      );
+      _selectedImageModel = _validSelectedModel(
+        ModelCatalog.instance.selectedImageModel.value,
+        _imageModels,
+      );
     });
   }
 
@@ -127,8 +159,8 @@ class _SettingsPanelState extends State<SettingsPanel> {
 
       if (!mounted) return;
       if (modelsResult.success) {
-        final videoModels = modelsResult.videoModels;
-        final imageModels = modelsResult.imageModels;
+        final videoModels = _dedupeModels(modelsResult.videoModels);
+        final imageModels = _dedupeModels(modelsResult.imageModels);
         final selectedVideo = videoModels.contains(_selectedVideoModel)
             ? _selectedVideoModel
             : videoModels.isNotEmpty
@@ -650,6 +682,9 @@ class _DropdownRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final models = _dedupeModels(this.models);
+    final value = _validSelectedModel(selectedModel, models);
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
       child: Row(
@@ -687,7 +722,7 @@ class _DropdownRow extends StatelessWidget {
                   ),
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
-                      value: selectedModel,
+                      value: value,
                       hint: const Text('请先获取可用模型'),
                       isExpanded: true,
                       menuMaxHeight: 260,
@@ -710,7 +745,7 @@ class _DropdownRow extends StatelessWidget {
                             ),
                           ),
                       ],
-                      onChanged: onChanged,
+                      onChanged: models.isEmpty ? null : onChanged,
                     ),
                   ),
                 ),

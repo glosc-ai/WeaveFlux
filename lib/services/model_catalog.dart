@@ -131,14 +131,19 @@ class ModelCatalog {
     );
 
     final currentVideo = selectedVideoModel.value;
-    if ((currentVideo == null || !normalizedVideo.contains(currentVideo)) &&
-        normalizedVideo.isNotEmpty) {
+    if (normalizedVideo.isEmpty) {
+      selectedVideoModel.value = null;
+      await _storage.delete(key: selectedVideoModelKey);
+      await _storage.delete(key: legacyModelKey);
+    } else if (currentVideo == null || !normalizedVideo.contains(currentVideo)) {
       await setSelectedVideoModel(normalizedVideo.first);
     }
 
     final currentImage = selectedImageModel.value;
-    if ((currentImage == null || !normalizedImage.contains(currentImage)) &&
-        normalizedImage.isNotEmpty) {
+    if (normalizedImage.isEmpty) {
+      selectedImageModel.value = null;
+      await _storage.delete(key: selectedImageModelKey);
+    } else if (currentImage == null || !normalizedImage.contains(currentImage)) {
       await setSelectedImageModel(normalizedImage.first);
     }
   }
