@@ -1,6 +1,8 @@
 package com.example.weaveflux
 
 import android.content.ContentValues
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -10,11 +12,13 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import androidx.core.content.FileProvider
 import org.json.JSONObject
 
 class MainActivity : FlutterActivity() {
     private val channelName = "weaveflux/go_core"
     private val mediaStoreChannelName = "weaveflux/media_store"
+    private val updateChannelName = "weaveflux/update"
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var goCoreChannel: MethodChannel
 
@@ -139,6 +143,61 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            updateChannelName,
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "installApk" -> {
+                    val apkPath = call.argument<String>("apkPath").orEmpty()
+                    try {
+                        installApk(apkPath)
+                        result.success(null)
+                    } catch (error: Throwable) {
+                        result.error(
+                            "INSTALL_FAILED",
+                            error.message ?: "Failed to open APK installer",
+                            null,
+                        )
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun installApk(apkPath: String) {
+        val apk = File(apkPath)
+        require(apk.exists() && apk.isFile) { "APK file does not exist: $apkPath" }
+        require(apk.extension.equals("apk", ignoreCase = true)) {
+            "Invalid APK file: $apkPath"
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !packageManager.canRequestPackageInstalls()
+        ) {
+            val settingsIntent = Intent(
+                android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:$packageName"),
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(settingsIntent)
+            throw IllegalStateException("请允许 WeaveFlux 安装未知来源应用后重试")
+        }
+
+        val uri = FileProvider.getUriForFile(
+            this,
+            "$packageName.fileprovider",
+            apk,
+        )
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(intent)
     }
 
     private fun exportVideoToGallery(localPath: String, displayName: String) {
