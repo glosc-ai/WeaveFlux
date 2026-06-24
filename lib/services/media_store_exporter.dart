@@ -12,9 +12,32 @@ class MediaStoreExporter {
     required String localPath,
     required String displayName,
   }) async {
+    await _export(
+      method: 'exportVideoToGallery',
+      localPath: localPath,
+      displayName: displayName,
+    );
+  }
+
+  Future<void> exportImage({
+    required String localPath,
+    required String displayName,
+  }) async {
+    await _export(
+      method: 'exportImageToGallery',
+      localPath: localPath,
+      displayName: displayName,
+    );
+  }
+
+  Future<void> _export({
+    required String method,
+    required String localPath,
+    required String displayName,
+  }) async {
     try {
       await _channel.invokeMethod<void>(
-        'exportVideoToGallery',
+        method,
         <String, Object?>{
           'localPath': localPath,
           'displayName': displayName,
