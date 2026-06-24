@@ -1,11 +1,14 @@
 package com.example.weaveflux
 
 import android.content.ContentValues
+import android.app.DownloadManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.Environment
 import android.provider.MediaStore
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -21,6 +24,7 @@ class MainActivity : FlutterActivity() {
     private val updateChannelName = "weaveflux/update"
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var goCoreChannel: MethodChannel
+    private lateinit var updateChannel: MethodChannel
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -144,36 +148,183 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        MethodChannel(
+        updateChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             updateChannelName,
-        ).setMethodCallHandler { call, result ->
+        )
+        updateChannel.setMethodCallHandler { call, result ->
             when (call.method) {
+                "downloadApk" -> {
+                    val url = call.argument<String>("url").orEmpty()
+                    val displayName = call.argument<String>("displayName").orEmpty()
+                    Thread {
+                        try {
+                            val path = downloadApkWithSystemManager(url, displayName)
+                            mainHandler.post { result.success(path) }
+                        } catch (error: Throwable) {
+                            mainHandler.post {
+                                result.error(
+                                    "DOWNLOAD_FAILED",
+                                    error.message ?: "Failed to download APK",
+                                    null,
+                                )
+                            }
+                        }
+                    }.start()
+                }
                 "installApk" -> {
                     val apkPath = call.argument<String>("apkPath").orEmpty()
-                    try {
-                        installApk(apkPath)
-                        result.success(null)
-                    } catch (error: Throwable) {
-                        result.error(
-                            "INSTALL_FAILED",
-                            error.message ?: "Failed to open APK installer",
-                            null,
-                        )
-                    }
+                    Thread {
+                        try {
+                            val apk = validateApkFile(apkPath)
+                            mainHandler.post {
+                                try {
+                                    openApkInstaller(apk)
+                                    result.success(null)
+                                } catch (error: Throwable) {
+                                    result.error(
+                                        "INSTALL_FAILED",
+                                        error.message ?: "Failed to open APK installer",
+                                        null,
+                                    )
+                                }
+                            }
+                        } catch (error: Throwable) {
+                            mainHandler.post {
+                                result.error(
+                                    "INSTALL_FAILED",
+                                    error.message ?: "Failed to prepare APK installer",
+                                    null,
+                                )
+                            }
+                        }
+                    }.start()
                 }
                 else -> result.notImplemented()
             }
         }
     }
 
-    private fun installApk(apkPath: String) {
+    private fun downloadApkWithSystemManager(url: String, displayName: String): String {
+        require(url.isNotBlank()) { "APK download URL is empty" }
+        val safeName = sanitizeApkName(displayName)
+        val existing = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?.resolve(safeName)
+        if (existing != null && existing.exists()) {
+            existing.delete()
+        }
+
+        val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val request = DownloadManager.Request(Uri.parse(url)).apply {
+            setTitle("WeaveFlux update")
+            setDescription(safeName)
+            setMimeType("application/vnd.android.package-archive")
+            setAllowedOverMetered(true)
+            setAllowedOverRoaming(true)
+            setNotificationVisibility(
+                DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED,
+            )
+            setDestinationInExternalFilesDir(
+                this@MainActivity,
+                Environment.DIRECTORY_DOWNLOADS,
+                safeName,
+            )
+        }
+        val downloadId = manager.enqueue(request)
+        val query = DownloadManager.Query().setFilterById(downloadId)
+        var lastProgress = -1
+        val startedAt = System.currentTimeMillis()
+
+        while (true) {
+            manager.query(query)?.use { cursor ->
+                if (!cursor.moveToFirst()) {
+                    throw IllegalStateException("Download disappeared")
+                }
+                val status = cursor.getInt(
+                    cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS),
+                )
+                val downloaded = cursor.getLong(
+                    cursor.getColumnIndexOrThrow(
+                        DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR,
+                    ),
+                )
+                val total = cursor.getLong(
+                    cursor.getColumnIndexOrThrow(
+                        DownloadManager.COLUMN_TOTAL_SIZE_BYTES,
+                    ),
+                )
+                if (total > 0) {
+                    val percent = ((downloaded * 100) / total).toInt()
+                    if (percent != lastProgress) {
+                        lastProgress = percent
+                        postUpdateDownloadProgress(percent / 100.0)
+                    }
+                }
+
+                when (status) {
+                    DownloadManager.STATUS_SUCCESSFUL -> {
+                        postUpdateDownloadProgress(1.0)
+                        val localUri = cursor.getString(
+                            cursor.getColumnIndexOrThrow(
+                                DownloadManager.COLUMN_LOCAL_URI,
+                            ),
+                        )
+                        val path = Uri.parse(localUri).path
+                            ?: throw IllegalStateException("Download path is empty")
+                        return path
+                    }
+                    DownloadManager.STATUS_FAILED -> {
+                        val reason = cursor.getInt(
+                            cursor.getColumnIndexOrThrow(
+                                DownloadManager.COLUMN_REASON,
+                            ),
+                        )
+                        throw IllegalStateException("Download failed, reason=$reason")
+                    }
+                }
+            } ?: throw IllegalStateException("Unable to query download status")
+
+            if (System.currentTimeMillis() - startedAt > 10 * 60 * 1000L) {
+                manager.remove(downloadId)
+                throw IllegalStateException("Download timed out after 10 minutes")
+            }
+            Thread.sleep(1000L)
+        }
+    }
+
+    private fun postUpdateDownloadProgress(progress: Double) {
+        mainHandler.post {
+            try {
+                updateChannel.invokeMethod(
+                    "updateDownloadProgress",
+                    mapOf("progress" to progress),
+                )
+            } catch (error: Throwable) {
+                android.util.Log.e("WeaveFlux", "Failed to deliver update progress", error)
+            }
+        }
+    }
+
+    private fun sanitizeApkName(name: String): String {
+        val cleaned = name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
+        val withFallback = if (cleaned.isBlank()) "weaveflux_update.apk" else cleaned
+        return if (withFallback.lowercase().endsWith(".apk")) {
+            withFallback
+        } else {
+            "$withFallback.apk"
+        }
+    }
+
+    private fun validateApkFile(apkPath: String): File {
         val apk = File(apkPath)
         require(apk.exists() && apk.isFile) { "APK file does not exist: $apkPath" }
         require(apk.extension.equals("apk", ignoreCase = true)) {
             "Invalid APK file: $apkPath"
         }
+        return apk
+    }
 
+    private fun openApkInstaller(apk: File) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             !packageManager.canRequestPackageInstalls()
         ) {
@@ -184,7 +335,9 @@ class MainActivity : FlutterActivity() {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             startActivity(settingsIntent)
-            throw IllegalStateException("请允许 WeaveFlux 安装未知来源应用后重试")
+            throw IllegalStateException(
+                "Please allow WeaveFlux to install unknown apps, then retry",
+            )
         }
 
         val uri = FileProvider.getUriForFile(

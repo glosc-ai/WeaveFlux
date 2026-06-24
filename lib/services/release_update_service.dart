@@ -1,13 +1,14 @@
 import 'dart:io';
+import 'dart:isolate';
+import 'dart:convert';
 
-import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:package_info_plus/package_info_plus.dart';
-import 'package:path_provider/path_provider.dart';
 
 class ReleaseUpdateService {
-  ReleaseUpdateService._();
+  ReleaseUpdateService._() {
+    _channel.setMethodCallHandler(_handleNativeCallback);
+  }
 
   static final ReleaseUpdateService instance = ReleaseUpdateService._();
 
@@ -17,55 +18,62 @@ class ReleaseUpdateService {
     'GITHUB_REPOSITORY',
     defaultValue: _defaultRepository,
   );
-
-  final Dio _dio = Dio(
-    BaseOptions(
-      connectTimeout: const Duration(seconds: 15),
-      receiveTimeout: const Duration(seconds: 30),
-      headers: const {
-        'Accept': 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    ),
+  static const _currentVersion = String.fromEnvironment(
+    'APP_VERSION',
+    defaultValue: '0.1.0',
   );
 
+  ValueChanged<double>? _activeDownloadProgress;
+
+  Future<dynamic> _handleNativeCallback(MethodCall call) async {
+    if (call.method != 'updateDownloadProgress') return null;
+    final args = call.arguments;
+    if (args is! Map) return null;
+    final progress = args['progress'];
+    if (progress is num) {
+      _activeDownloadProgress?.call(progress.toDouble().clamp(0, 1));
+    }
+    return null;
+  }
+
   Future<ReleaseCheckResult> checkLatest() async {
-    final packageInfo = await PackageInfo.fromPlatform();
-    final currentVersion = packageInfo.version;
-    const uri = 'https://api.github.com/repos/$_repository/releases/latest';
+    final fetchResult = await Future.any<ReleaseFetchResult>([
+      Isolate.run(() => _fetchLatestRelease(_repository)),
+      Future<void>.delayed(const Duration(seconds: 15)).then(
+        (_) => const ReleaseFetchResult.error(
+          '\u68c0\u67e5\u66f4\u65b0\u8d85\u65f6\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002',
+        ),
+      ),
+    ]);
+
+    if (!fetchResult.success) {
+      return ReleaseCheckResult.error(
+        fetchResult.error,
+        currentVersion: _currentVersion,
+      );
+    }
 
     try {
-      final response = await _dio.get<Map<String, dynamic>>(uri);
-      final payload = response.data;
-      if (payload == null) {
+      final release = fetchResult.release;
+      if (release == null || release.version.isEmpty) {
         return ReleaseCheckResult.error(
-            '\u672a\u80fd\u89e3\u6790\u6700\u65b0\u7248\u672c\u53f7');
+          '\u672a\u80fd\u89e3\u6790\u6700\u65b0\u7248\u672c\u53f7',
+          currentVersion: _currentVersion,
+        );
       }
 
-      final release = ReleaseInfo.fromJson(payload);
-      if (release.version.isEmpty) {
-        return ReleaseCheckResult.error(
-            '\u672a\u80fd\u89e3\u6790\u6700\u65b0\u7248\u672c\u53f7');
-      }
-
-      final hasUpdate = _compareVersions(release.version, currentVersion) > 0;
+      final hasUpdate = _compareVersions(release.version, _currentVersion) > 0;
       return ReleaseCheckResult(
         success: true,
-        currentVersion: currentVersion,
+        currentVersion: _currentVersion,
         release: release,
         hasUpdate: hasUpdate,
-      );
-    } on DioException catch (error, stack) {
-      debugPrint('Release check failed: $error\nStack: $stack');
-      return ReleaseCheckResult.error(
-        error.response?.data?.toString() ?? error.message ?? error.toString(),
-        currentVersion: currentVersion,
       );
     } catch (error, stack) {
       debugPrint('Release check failed: $error\nStack: $stack');
       return ReleaseCheckResult.error(
         error.toString(),
-        currentVersion: currentVersion,
+        currentVersion: _currentVersion,
       );
     }
   }
@@ -80,29 +88,27 @@ class ReleaseUpdateService {
           '\u8be5 Release \u6ca1\u6709\u53ef\u4e0b\u8f7d\u7684 APK \u9644\u4ef6');
     }
 
-    final directory = await getApplicationDocumentsDirectory();
-    final updatesDir =
-        Directory('${directory.path}${Platform.pathSeparator}updates');
-    if (!await updatesDir.exists()) {
-      await updatesDir.create(recursive: true);
-    }
-
     final safeVersion =
         release.version.replaceAll(RegExp(r'[^0-9A-Za-z._-]'), '_');
-    final targetPath =
-        '${updatesDir.path}${Platform.pathSeparator}weaveflux_$safeVersion.apk';
-
-    await _dio.download(
-      apkUrl,
-      targetPath,
-      onReceiveProgress: (received, total) {
-        if (total <= 0) return;
-        onProgress?.call(received / total);
-      },
-      options: Options(headers: const {'Accept': 'application/octet-stream'}),
-    );
-
-    return targetPath;
+    final displayName = 'weaveflux_$safeVersion.apk';
+    _activeDownloadProgress = onProgress;
+    try {
+      onProgress?.call(0);
+      final path = await _channel.invokeMethod<String>('downloadApk', {
+        'url': apkUrl,
+        'displayName': displayName,
+      });
+      if (path == null || path.isEmpty) {
+        throw StateError('APK 下载完成但未返回本地路径');
+      }
+      onProgress?.call(1);
+      return path;
+    } on PlatformException catch (error, stack) {
+      debugPrint('Download APK failed: $error\nStack: $stack');
+      throw StateError(error.message ?? error.code);
+    } finally {
+      _activeDownloadProgress = null;
+    }
   }
 
   Future<void> installApk(String apkPath) async {
@@ -135,6 +141,58 @@ class ReleaseUpdateService {
         .map((part) => int.tryParse(part.replaceAll(RegExp(r'\D'), '')) ?? 0)
         .toList();
   }
+}
+
+Future<ReleaseFetchResult> _fetchLatestRelease(String repository) async {
+  final client = HttpClient()
+    ..connectionTimeout = const Duration(seconds: 8)
+    ..idleTimeout = const Duration(seconds: 8);
+  try {
+    final uri =
+        Uri.https('api.github.com', '/repos/$repository/releases/latest');
+    final request =
+        await client.getUrl(uri).timeout(const Duration(seconds: 8));
+    request.headers
+        .set(HttpHeaders.acceptHeader, 'application/vnd.github+json');
+    request.headers.set('X-GitHub-Api-Version', '2022-11-28');
+    request.headers.set(HttpHeaders.userAgentHeader, 'WeaveFlux');
+
+    final response = await request.close().timeout(const Duration(seconds: 15));
+    final body = await response.transform(utf8.decoder).join();
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      return ReleaseFetchResult.error(
+        'GitHub release request failed: HTTP ${response.statusCode}, $body',
+      );
+    }
+
+    final payload = jsonDecode(body);
+    if (payload is! Map<String, dynamic>) {
+      return const ReleaseFetchResult.error('Invalid GitHub release response');
+    }
+    return ReleaseFetchResult.success(ReleaseInfo.fromJson(payload));
+  } catch (error) {
+    return ReleaseFetchResult.error(error.toString());
+  } finally {
+    client.close(force: true);
+  }
+}
+
+class ReleaseFetchResult {
+  const ReleaseFetchResult._({
+    required this.success,
+    this.release,
+    this.error = '',
+  });
+
+  const ReleaseFetchResult.success(ReleaseInfo release)
+      : this._(success: true, release: release);
+
+  const ReleaseFetchResult.error(String error)
+      : this._(success: false, error: error);
+
+  final bool success;
+  final ReleaseInfo? release;
+  final String error;
 }
 
 class ReleaseCheckResult {

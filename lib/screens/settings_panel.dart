@@ -359,6 +359,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
   }
 
   Future<void> _checkUpdate() async {
+    if (_checkingUpdate || _downloadingUpdate) return;
     setState(() {
       _checkingUpdate = true;
       _updateResult = null;
@@ -400,8 +401,11 @@ class _SettingsPanelState extends State<SettingsPanel> {
   }
 
   Future<void> _downloadAndInstallUpdate() async {
+    if (_checkingUpdate || _downloadingUpdate) return;
     final release = _availableRelease;
     if (release == null) return;
+    var lastProgressUpdate = DateTime.fromMillisecondsSinceEpoch(0);
+    var lastProgressPercent = -1;
 
     setState(() {
       _downloadingUpdate = true;
@@ -417,12 +421,20 @@ class _SettingsPanelState extends State<SettingsPanel> {
         release,
         onProgress: (progress) {
           if (!mounted) return;
+          final percent = (progress.clamp(0, 1) * 100).round();
+          final now = DateTime.now();
+          if (percent == lastProgressPercent &&
+              now.difference(lastProgressUpdate) <
+                  const Duration(milliseconds: 300)) {
+            return;
+          }
+          lastProgressPercent = percent;
+          lastProgressUpdate = now;
           setState(() {
             _downloadProgress = progress.clamp(0, 1);
             _updateResult = _UpdateResult(
               title: '\u6b63\u5728\u4e0b\u8f7d ${release.version}',
-              detail:
-                  '\u4e0b\u8f7d\u8fdb\u5ea6 ${(_downloadProgress * 100).round()}%',
+              detail: '\u4e0b\u8f7d\u8fdb\u5ea6 $percent%',
             );
           });
         },
