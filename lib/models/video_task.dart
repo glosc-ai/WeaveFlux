@@ -59,7 +59,13 @@ class VideoTask {
   final String resultUrl;
   final String resultBase64;
 
+  bool get isImage =>
+      mode == VideoTaskMode.textToImage || mode == VideoTaskMode.imageToImage;
+
+  bool get isVideo => !isImage;
+
   VideoTask copyWith({
+    String? remoteTaskId,
     VideoTaskStatus? status,
     String? errorMessage,
     String? localVideoPath,
@@ -68,7 +74,7 @@ class VideoTask {
   }) {
     return VideoTask(
       localId: localId,
-      remoteTaskId: remoteTaskId,
+      remoteTaskId: remoteTaskId ?? this.remoteTaskId,
       status: status ?? this.status,
       mode: mode,
       prompt: prompt,

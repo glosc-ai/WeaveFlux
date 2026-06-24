@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:video_player/video_player.dart';
 
 import '../models/video_task.dart';
 import '../services/task_store.dart';
@@ -17,6 +16,29 @@ class TaskOrbit extends StatefulWidget {
 
 class _TaskOrbitState extends State<TaskOrbit> {
   final Set<String> _expandedTaskIds = <String>{};
+  bool _loading = false;
+  String _loadError = '';
+
+  Future<void> _loadHistory() async {
+    if (_loading) return;
+    setState(() {
+      _loading = true;
+      _loadError = '';
+    });
+
+    try {
+      await TaskStore.instance.load();
+      if (!mounted) return;
+      setState(() => _loading = false);
+    } catch (error, stack) {
+      debugPrint('TaskOrbit load error: $error\nStack: $stack');
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = error.toString();
+      });
+    }
+  }
 
   void _toggleExpanded(VideoTask task) {
     if (task.status != VideoTaskStatus.failed) return;
@@ -32,28 +54,32 @@ class _TaskOrbitState extends State<TaskOrbit> {
     return WeaveScaffold(
       activeRoute: TaskOrbit.routeName,
       header: const _TaskHeader(),
-      child: ValueListenableBuilder<List<VideoTask>>(
-        valueListenable: TaskStore.instance.tasks,
-        builder: (context, tasks, _) {
-          if (tasks.isEmpty) {
-            return const _EmptyTasks();
-          }
-          return ListView.separated(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-            itemCount: tasks.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 12),
-            itemBuilder: (context, index) {
-              final task = tasks[index];
-              return _TaskCard(
-                task: task,
-                expanded: _expandedTaskIds.contains(task.localId),
-                onTap: () => _toggleExpanded(task),
-                onRetry: () => TaskStore.instance.retryPolling(task),
-              );
-            },
-          );
-        },
-      ),
+      child: _loading
+          ? const _LoadingTasks()
+          : _loadError.isNotEmpty
+              ? _TaskLoadError(error: _loadError, onRetry: _loadHistory)
+              : ValueListenableBuilder<List<VideoTask>>(
+                  valueListenable: TaskStore.instance.tasks,
+                  builder: (context, tasks, _) {
+                    if (tasks.isEmpty) {
+                      return _EmptyTasks(onLoadHistory: _loadHistory);
+                    }
+                    return ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                      itemCount: tasks.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 12),
+                      itemBuilder: (context, index) {
+                        final task = tasks[index];
+                        return _TaskCard(
+                          task: task,
+                          expanded: _expandedTaskIds.contains(task.localId),
+                          onTap: () => _toggleExpanded(task),
+                          onRetry: () => TaskStore.instance.retryPolling(task),
+                        );
+                      },
+                    );
+                  },
+                ),
     );
   }
 }
@@ -88,17 +114,86 @@ class _TaskHeader extends StatelessWidget {
   }
 }
 
-class _EmptyTasks extends StatelessWidget {
-  const _EmptyTasks();
+class _LoadingTasks extends StatelessWidget {
+  const _LoadingTasks();
 
   @override
   Widget build(BuildContext context) {
     return const Center(
+      child: CircularProgressIndicator(
+        color: AppColors.secondaryAccent,
+        strokeWidth: 2,
+      ),
+    );
+  }
+}
+
+class _EmptyTasks extends StatelessWidget {
+  const _EmptyTasks({required this.onLoadHistory});
+
+  final VoidCallback onLoadHistory;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
       child: Padding(
-        padding: EdgeInsets.all(24),
-        child: Text(
-          '暂无生成任务',
-          style: TextStyle(color: AppColors.muted, fontSize: 13),
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.track_changes_rounded,
+              color: AppColors.secondaryAccent,
+              size: 28,
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              '暂无内存中的生成任务',
+              style: TextStyle(color: AppColors.muted, fontSize: 13),
+            ),
+            const SizedBox(height: 14),
+            OutlinedButton.icon(
+              onPressed: onLoadHistory,
+              icon: const Icon(Icons.history_rounded, size: 16),
+              label: const Text('加载历史任务'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TaskLoadError extends StatelessWidget {
+  const _TaskLoadError({required this.error, required this.onRetry});
+
+  final String error;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.error_outline_rounded, color: AppColors.danger),
+            const SizedBox(height: 12),
+            Text(
+              error,
+              textAlign: TextAlign.center,
+              maxLines: 5,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: AppColors.muted, fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('重试'),
+            ),
+          ],
         ),
       ),
     );
@@ -176,6 +271,7 @@ class _TaskCard extends StatelessWidget {
                                 task.size,
                                 _relativeTime(task.createdAt),
                               ]
+                                  .where((text) => text.isNotEmpty)
                                   .map(
                                     (text) => Text(
                                       text,
@@ -231,6 +327,7 @@ class _Thumb extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final completed = task.status == VideoTaskStatus.completed;
     return Container(
       width: 56,
       height: 56,
@@ -239,20 +336,20 @@ class _Thumb extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.04),
         borderRadius: AppRadii.inputRadius,
-        gradient: task.status == VideoTaskStatus.completed
+        gradient: completed
             ? const LinearGradient(
                 colors: [Color(0xFF1A1A2E), Color(0xFF16213E)],
               )
             : null,
       ),
-      child: task.status == VideoTaskStatus.completed
-          ? task.resultUrl.isEmpty
-              ? const Icon(
-                  Icons.check_rounded,
-                  color: AppColors.primaryAccent,
-                  size: 18,
-                )
-              : _CompletedPreview(url: task.resultUrl)
+      child: completed
+          ? Icon(
+              task.isImage
+                  ? Icons.image_outlined
+                  : Icons.movie_creation_outlined,
+              color: AppColors.primaryAccent,
+              size: 20,
+            )
           : Text(
               task.mode == VideoTaskMode.imageToVideo ? 'I2V\n生成中' : 'T2V\n生成中',
               textAlign: TextAlign.center,
@@ -302,7 +399,7 @@ class _StatusIndicator extends StatelessWidget {
           const SizedBox(height: 4),
           Text(
             switch (status) {
-              VideoTaskStatus.processing => 'Go 核心\n轮询中',
+              VideoTaskStatus.processing => '等待轮询',
               VideoTaskStatus.failed => '生成失败',
               VideoTaskStatus.completed => '已完成',
             },
@@ -319,100 +416,6 @@ class _StatusIndicator extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _CompletedPreview extends StatefulWidget {
-  const _CompletedPreview({required this.url});
-
-  final String url;
-
-  @override
-  State<_CompletedPreview> createState() => _CompletedPreviewState();
-}
-
-class _CompletedPreviewState extends State<_CompletedPreview> {
-  VideoPlayerController? _controller;
-  bool _ready = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _initPreview();
-  }
-
-  @override
-  void didUpdateWidget(covariant _CompletedPreview oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.url != widget.url) {
-      _controller?.dispose();
-      _controller = null;
-      _ready = false;
-      _initPreview();
-    }
-  }
-
-  Future<void> _initPreview() async {
-    final uri = Uri.tryParse(widget.url);
-    if (uri == null || !uri.hasScheme) return;
-    final controller = VideoPlayerController.networkUrl(uri);
-    _controller = controller;
-    try {
-      await controller.initialize();
-      await controller.pause();
-      if (!mounted || _controller != controller) return;
-      setState(() => _ready = true);
-    } catch (_) {
-      await controller.dispose();
-      if (!mounted || _controller != controller) return;
-      setState(() {
-        _controller = null;
-        _ready = false;
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller?.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final controller = _controller;
-    if (_ready && controller != null) {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(6),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            FittedBox(
-              fit: BoxFit.cover,
-              child: SizedBox(
-                width: controller.value.size.width,
-                height: controller.value.size.height,
-                child: VideoPlayer(controller),
-              ),
-            ),
-            const Align(
-              alignment: Alignment.center,
-              child: Icon(
-                Icons.play_circle_fill_rounded,
-                color: AppColors.primaryAccent,
-                size: 22,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return const Icon(
-      Icons.check_rounded,
-      color: AppColors.primaryAccent,
-      size: 18,
     );
   }
 }

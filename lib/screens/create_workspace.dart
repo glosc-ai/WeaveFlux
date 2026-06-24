@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -78,13 +79,16 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
   @override
   void initState() {
     super.initState();
-    _loadDefaultModel();
     ModelCatalog.instance.videoModels.addListener(_syncModelsFromCatalog);
     ModelCatalog.instance.imageModels.addListener(_syncModelsFromCatalog);
     ModelCatalog.instance.selectedVideoModel
         .addListener(_syncModelsFromCatalog);
     ModelCatalog.instance.selectedImageModel
         .addListener(_syncModelsFromCatalog);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _loadDefaultModel();
+    });
   }
 
   @override
@@ -116,17 +120,23 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
 
   void _syncModelsFromCatalog() {
     if (!mounted) return;
-    final videoModels = ModelCatalog.instance.videoModels.value;
-    final imageModels = ModelCatalog.instance.imageModels.value;
+    final videoModels = _dedupeModels(ModelCatalog.instance.videoModels.value);
+    final imageModels = _dedupeModels(ModelCatalog.instance.imageModels.value);
     final videoModel = ModelCatalog.instance.selectedVideoModel.value;
     final imageModel = ModelCatalog.instance.selectedImageModel.value;
     setState(() {
       _videoModels = videoModels;
       _imageModels = imageModels;
-      _selectedVideoModel =
-          videoModel ?? (videoModels.isEmpty ? null : videoModels.first);
-      _selectedImageModel =
-          imageModel ?? (imageModels.isEmpty ? null : imageModels.first);
+      _selectedVideoModel = videoModels.contains(videoModel)
+          ? videoModel
+          : videoModels.isEmpty
+              ? null
+              : videoModels.first;
+      _selectedImageModel = imageModels.contains(imageModel)
+          ? imageModel
+          : imageModels.isEmpty
+              ? null
+              : imageModels.first;
       if (_selectedVideoModel != null) {
         _modelController.text = _selectedVideoModel!;
       }
@@ -134,6 +144,17 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
         _imageModelController.text = _selectedImageModel!;
       }
     });
+  }
+
+  List<String> _dedupeModels(List<String> models) {
+    final seen = <String>{};
+    final result = <String>[];
+    for (final raw in models) {
+      final model = raw.trim();
+      if (model.isEmpty || !seen.add(model)) continue;
+      result.add(model);
+    }
+    return result;
   }
 
   Future<void> _pickImage(LocalAssetSlot slot) async {
@@ -204,7 +225,7 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
       return;
     }
     if (_target == CreationTarget.image) {
-      _showMessage('图片生成入口已就绪，后续接入图像生成端点后可直接派发。');
+      _showMessage('图片生成入口已接入，请直接提交到任务队列。');
       return;
     }
     await _startVideoCreation();
@@ -237,58 +258,48 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
       final referenceBase64 = _imageReferenceFile == null
           ? ''
           : base64Encode(await File(_imageReferenceFile!.path).readAsBytes());
-      final result = await GoCoreBridge.dispatchImageTask(
-        baseUrl: baseUrl,
-        apiKey: apiKey,
-        payload: <String, Object?>{
-          'model': model,
-          'prompt': prompt,
-          'size': _imageSize,
-          'quality': _imageQuality,
-          'count': _imageCount.toString(),
-          'negative_prompt': _negativePromptController.text.trim(),
-          'seed': _seedController.text.trim(),
-          'image_base64': referenceBase64,
-        },
+      final task = VideoTask(
+        localId: DateTime.now().microsecondsSinceEpoch.toString(),
+        remoteTaskId: '',
+        status: VideoTaskStatus.processing,
+        mode: _imageReferenceFile == null
+            ? VideoTaskMode.textToImage
+            : VideoTaskMode.imageToImage,
+        prompt: prompt,
+        model: model,
+        aspectRatio: _aspectRatioForSize(_imageSize),
+        size: _imageSize,
+        motionScale: 0,
+        createdAt: DateTime.now(),
+        imagePath: _imageReferenceFile?.path ?? '',
       );
+      final payload = <String, Object?>{
+        'model': model,
+        'prompt': prompt,
+        'size': _imageSize,
+        'quality': _imageQuality,
+        'count': _imageCount.toString(),
+        'negative_prompt': _negativePromptController.text.trim(),
+        'seed': _seedController.text.trim(),
+        'image_base64': referenceBase64,
+      };
+
+      await TaskStore.instance.add(task);
+      unawaited(_dispatchImageTaskInBackground(task, baseUrl, apiKey, payload));
 
       if (!mounted) return;
-      if (!result.success) {
-        _showMessage(result.error.isEmpty ? '图片任务发起失败' : result.error);
-        return;
-      }
-
-      await TaskStore.instance.add(
-        VideoTask(
-          localId: DateTime.now().microsecondsSinceEpoch.toString(),
-          remoteTaskId: result.taskId,
-          status: _statusFromDispatch(result.status, result),
-          mode: _imageReferenceFile == null
-              ? VideoTaskMode.textToImage
-              : VideoTaskMode.imageToImage,
-          prompt: prompt,
-          model: model,
-          aspectRatio: _aspectRatioForSize(_imageSize),
-          size: _imageSize,
-          motionScale: 0,
-          createdAt: DateTime.now(),
-          imagePath: _imageReferenceFile?.path ?? '',
-          resultUrl: result.resultUrl,
-          resultBase64: result.resultBase64,
-        ),
-      );
-
-      _showMessage('图片任务已提交：${result.taskId}');
+      _showMessage('图片任务已加入队列');
       widget.onOpenTasks?.call();
     } catch (error) {
       if (!mounted) return;
-      _showMessage('图片任务发起失败：$error');
+      _showMessage('图片任务入队失败：$error');
     } finally {
       if (mounted) {
         setState(() => _submitting = false);
       }
     }
   }
+
 
   Future<void> _startVideoCreation() async {
     if (_submitting) return;
@@ -338,67 +349,134 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
       final audioBase64 = _audioFile?.path == null
           ? ''
           : base64Encode(await File(_audioFile!.path!).readAsBytes());
-
-      final result = await GoCoreBridge.dispatchVideoTask(
-        baseUrl: baseUrl,
-        apiKey: apiKey,
-        payload: <String, Object?>{
-          'model': model,
-          'prompt': prompt,
-          'legacy_prompt': _buildDispatchPrompt(prompt),
-          'size': _size,
-          'motion_scale': _motion.toStringAsFixed(3),
-          'duration': _duration.round().toString(),
-          'negative_prompt': _negativePromptController.text.trim(),
-          'prompt_extension': _promptExtension.toString(),
-          'watermark': _watermark.toString(),
-          'seed': _seedController.text.trim(),
-          'template': _templateController.text.trim(),
-          'mode': _apiVideoMode(),
-          'image_base64': imageBase64,
-          'last_frame_base64': lastFrameBase64,
-          'clip_base64': clipBase64,
-          'audio_base64': audioBase64,
-          'first_frame_url': _firstFrameUrlController.text.trim(),
-          'last_frame_url': _lastFrameUrlController.text.trim(),
-          'clip_url': _clipUrlController.text.trim(),
-          'audio_url': _audioUrlController.text.trim(),
-        },
+      final task = VideoTask(
+        localId: DateTime.now().microsecondsSinceEpoch.toString(),
+        remoteTaskId: '',
+        status: VideoTaskStatus.processing,
+        mode: _taskModeForVideoMode(),
+        prompt: prompt,
+        model: model,
+        aspectRatio: _aspectRatioForSize(_size),
+        size: _size,
+        motionScale: _motion,
+        createdAt: DateTime.now(),
+        imagePath: _firstFrameFile?.path ?? '',
       );
+      final payload = <String, Object?>{
+        'model': model,
+        'prompt': prompt,
+        'legacy_prompt': _buildDispatchPrompt(prompt),
+        'size': _size,
+        'motion_scale': _motion.toStringAsFixed(3),
+        'duration': _duration.round().toString(),
+        'negative_prompt': _negativePromptController.text.trim(),
+        'prompt_extension': _promptExtension.toString(),
+        'watermark': _watermark.toString(),
+        'seed': _seedController.text.trim(),
+        'template': _templateController.text.trim(),
+        'mode': _apiVideoMode(),
+        'image_base64': imageBase64,
+        'last_frame_base64': lastFrameBase64,
+        'clip_base64': clipBase64,
+        'audio_base64': audioBase64,
+        'first_frame_url': _firstFrameUrlController.text.trim(),
+        'last_frame_url': _lastFrameUrlController.text.trim(),
+        'clip_url': _clipUrlController.text.trim(),
+        'audio_url': _audioUrlController.text.trim(),
+      };
+
+      await TaskStore.instance.add(task);
+      unawaited(_dispatchVideoTaskInBackground(task, baseUrl, apiKey, payload));
 
       if (!mounted) return;
-      if (!result.success) {
-        _showMessage(result.error.isEmpty ? '任务发起失败' : result.error);
-        return;
-      }
-
-      await TaskStore.instance.add(
-        VideoTask(
-          localId: DateTime.now().microsecondsSinceEpoch.toString(),
-          remoteTaskId: result.taskId,
-          status: _statusFromDispatch(result.status, result),
-          mode: _taskModeForVideoMode(),
-          prompt: prompt,
-          model: model,
-          aspectRatio: _aspectRatioForSize(_size),
-          size: _size,
-          motionScale: _motion,
-          createdAt: DateTime.now(),
-          imagePath: _firstFrameFile?.path ?? '',
-          resultUrl: result.resultUrl,
-          resultBase64: result.resultBase64,
-        ),
-      );
-
-      _showMessage('任务已提交：${result.taskId}');
+      _showMessage('视频任务已加入队列');
       widget.onOpenTasks?.call();
     } catch (error) {
       if (!mounted) return;
-      _showMessage('任务发起失败：$error');
+      _showMessage('视频任务入队失败：$error');
     } finally {
       if (mounted) {
         setState(() => _submitting = false);
       }
+    }
+  }
+
+
+  Future<void> _dispatchImageTaskInBackground(
+    VideoTask task,
+    String baseUrl,
+    String apiKey,
+    Map<String, Object?> payload,
+  ) async {
+    try {
+      final result = await GoCoreBridge.dispatchImageTask(
+        baseUrl: baseUrl,
+        apiKey: apiKey,
+        payload: payload,
+      );
+      final status = result.success
+          ? _statusFromDispatch(result.status, result)
+          : VideoTaskStatus.failed;
+      await TaskStore.instance.update(
+        task.copyWith(
+          remoteTaskId: result.taskId.isEmpty ? task.remoteTaskId : result.taskId,
+          status: status,
+          errorMessage: result.success ? '' : result.error,
+          resultUrl: result.resultUrl,
+          resultBase64: result.resultBase64,
+        ),
+      );
+      if (result.success && status == VideoTaskStatus.completed) {
+        await TaskStore.instance.resumePendingDownloads();
+      }
+    } catch (error, stack) {
+      debugPrint('Image dispatch background error: $error\nStack: $stack');
+      await TaskStore.instance.update(
+        task.copyWith(
+          status: VideoTaskStatus.failed,
+          errorMessage: error.toString(),
+        ),
+      );
+    }
+  }
+
+  Future<void> _dispatchVideoTaskInBackground(
+    VideoTask task,
+    String baseUrl,
+    String apiKey,
+    Map<String, Object?> payload,
+  ) async {
+    try {
+      final result = await GoCoreBridge.dispatchVideoTask(
+        baseUrl: baseUrl,
+        apiKey: apiKey,
+        payload: payload,
+      );
+      final status = result.success
+          ? _statusFromDispatch(result.status, result)
+          : VideoTaskStatus.failed;
+      await TaskStore.instance.update(
+        task.copyWith(
+          remoteTaskId: result.taskId.isEmpty ? task.remoteTaskId : result.taskId,
+          status: status,
+          errorMessage: result.success ? '' : result.error,
+          resultUrl: result.resultUrl,
+          resultBase64: result.resultBase64,
+        ),
+      );
+      if (result.success && status == VideoTaskStatus.processing) {
+        await TaskStore.instance.startNativePollingForProcessingTasks();
+      } else if (result.success && status == VideoTaskStatus.completed) {
+        await TaskStore.instance.resumePendingDownloads();
+      }
+    } catch (error, stack) {
+      debugPrint('Video dispatch background error: $error\nStack: $stack');
+      await TaskStore.instance.update(
+        task.copyWith(
+          status: VideoTaskStatus.failed,
+          errorMessage: error.toString(),
+        ),
+      );
     }
   }
 
@@ -508,7 +586,7 @@ class _CreateWorkspaceState extends State<CreateWorkspace> {
           label: _submitting
               ? '提交中...'
               : _target == CreationTarget.video
-                  ? '开始生成视频'
+              ? '生成视频'
                   : '生成图片',
           onTap: _submitting ? null : _startCreation,
         ),
@@ -730,7 +808,7 @@ class _VideoWorkspace extends StatelessWidget {
         _ModeGrid(mode: mode, onChanged: onModeChanged),
         const SizedBox(height: 12),
         _PromptCard(
-          title: '视频提示词',
+          title: '提示词',
           hintText: '描述镜头、主体、动作、光线、风格和节奏...',
           controller: promptController,
           maxLines: 6,
@@ -831,7 +909,7 @@ class _ImageWorkspace extends StatelessWidget {
       children: [
         _PromptCard(
           title: '图片提示词',
-          hintText: '描述要生成的首帧、角色、场景、构图和视觉风格...',
+          hintText: '描述要生成的画面、角色、场景、构图和视觉风格...',
           controller: promptController,
           maxLines: 7,
           onChanged: onPromptChanged,
@@ -856,12 +934,12 @@ class _ImageWorkspace extends StatelessWidget {
               ),
               const SizedBox(height: 16),
               _ReferenceFilePicker(
-                title: '参考图片',
+                title: '参考图',
                 filePath: referenceFile?.path,
                 onPick: onPickReference,
               ),
               const SizedBox(height: 16),
-              const _FieldLabel('质量'),
+              const _FieldLabel('\u8d28\u91cf'),
               _ChoiceWrap(
                 value: quality,
                 values: const ['standard', 'hd'],
@@ -871,7 +949,7 @@ class _ImageWorkspace extends StatelessWidget {
               const _FieldLabel('图片数量'),
               _CountStepper(value: count, onChanged: onCountChanged),
               const SizedBox(height: 16),
-              const _FieldLabel('负面提示词'),
+              const _FieldLabel('反向提示词'),
               TextField(
                 controller: negativePromptController,
                 minLines: 2,
@@ -886,7 +964,7 @@ class _ImageWorkspace extends StatelessWidget {
                 controller: seedController,
                 keyboardType: TextInputType.number,
                 decoration: const InputDecoration(
-                  hintText: '可选，模型支持时生效',
+                  hintText: '可选',
                 ),
               ),
             ],
@@ -1092,7 +1170,7 @@ class _ReferencePanel extends StatelessWidget {
           ],
           if (mode == VideoCreationMode.extendClip)
             _AssetInput(
-              title: '继续 Extend clip',
+              title: '\u7ee7\u7eed Extend clip',
               controller: clipUrlController,
               filePath: clipFile?.path,
               hintText: 'https://.../clip.mp4',
@@ -1127,7 +1205,7 @@ class _AudioPanel extends StatelessWidget {
                   size: 17, color: AppColors.primaryAccent),
               SizedBox(width: 6),
               Text(
-                'Audio URL / 本地音频',
+                'Audio URL / \u672c\u5730\u97f3\u9891',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
               ),
             ],
@@ -1139,7 +1217,7 @@ class _AudioPanel extends StatelessWidget {
                 child: TextField(
                   controller: controller,
                   decoration: const InputDecoration(
-                    hintText: '可选，模型支持时生效',
+                    hintText: '可选',
                   ),
                 ),
               ),
@@ -1254,7 +1332,7 @@ class _VideoAdvancedPanel extends StatelessWidget {
             onChanged: onModelChanged,
           ),
           const SizedBox(height: 16),
-          const _FieldLabel('尺寸 / 分辨率'),
+          const _FieldLabel('尺寸 / 画幅'),
           _ChoiceWrap(
             value: size,
             values: const ['1024x576', '576x1024', '768x768', '720P', '1080P'],
@@ -1271,7 +1349,7 @@ class _VideoAdvancedPanel extends StatelessWidget {
             onChanged: onDurationChanged,
           ),
           _SliderField(
-            label: '动态幅度',
+            label: '运动幅度',
             valueLabel: motion.toStringAsFixed(2),
             value: motion,
             min: 0,
@@ -1292,7 +1370,7 @@ class _VideoAdvancedPanel extends StatelessWidget {
             onChanged: onWatermarkChanged,
           ),
           const SizedBox(height: 12),
-          const _FieldLabel('负面提示词'),
+          const _FieldLabel('反向提示词'),
           TextField(
             controller: negativePromptController,
             minLines: 2,
@@ -1934,7 +2012,7 @@ class _ConfigSheet extends StatelessWidget {
                     ),
                     const SizedBox(height: 16),
                     const Text(
-                      '未配置 API 凭据',
+                      '\u672a\u914d\u7f6e API \u51ed\u636e',
                       style:
                           TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                     ),
