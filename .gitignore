@@ -22,6 +22,8 @@ android/build/
 android/.kotlin/
 android/app/libs/*.aar
 android/app/libs/*.jar
+google-services.json
+android/app/google-services.json
 *.jks
 *.keystore
 key.properties

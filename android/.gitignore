@@ -10,5 +10,7 @@ app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java.timestamp
 
 # Remember to never publicly share your keystore.
 key.properties
+google-services.json
+app/google-services.json
 **/*.keystore
 **/*.jks
