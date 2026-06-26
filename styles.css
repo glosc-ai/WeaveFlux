@@ -154,13 +154,13 @@ button {
 
 .hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.02fr) minmax(320px, 0.86fr);
+  grid-template-columns: minmax(0, 0.98fr) minmax(420px, 1fr);
   align-items: center;
   gap: 52px;
   width: min(1160px, calc(100% - 32px));
   min-height: calc(100vh - 82px);
   margin: 0 auto;
-  padding: 70px 0 54px;
+  padding: 54px 0 42px;
 }
 
 .hero-copy {
@@ -264,10 +264,12 @@ h1 {
 .hero-visual {
   display: grid;
   place-items: center;
+  align-self: center;
+  overflow: visible;
 }
 
 .phone-shell {
-  width: min(100%, 330px);
+  width: min(100%, 390px);
   padding: 12px;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 38px;
@@ -276,14 +278,15 @@ h1 {
 }
 
 .main-phone {
-  transform: rotate(2deg);
+  transform: translateY(-32px) rotate(2deg);
+  transform-origin: center;
   animation: phoneFloat 6s ease-in-out infinite;
 }
 
 .phone-top {
   display: flex;
   justify-content: center;
-  height: 24px;
+  height: 18px;
 }
 
 .phone-top span {
@@ -294,20 +297,71 @@ h1 {
 }
 
 .app-preview {
-  min-height: 620px;
-  padding: 20px;
-  border-radius: 28px;
+  padding: 16px;
+  border-radius: 26px;
   background:
     linear-gradient(180deg, rgba(86, 199, 255, 0.08), transparent 28%),
     #0a0f17;
   overflow: hidden;
 }
 
+.screenshot-placeholder {
+  position: relative;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  min-height: 100%;
+  padding: 22px;
+  border: 1px dashed rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  color: #dce8f5;
+  text-align: center;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.08) 25%, transparent 25%) 0 0 / 28px 28px,
+    linear-gradient(315deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%) 0 0 / 28px 28px,
+    rgba(255, 255, 255, 0.045);
+  overflow: hidden;
+}
+
+.screenshot-placeholder::before {
+  width: 54px;
+  height: 54px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 16px;
+  content: "";
+  background:
+    radial-gradient(circle at 68% 30%, var(--accent) 0 5px, transparent 6px),
+    linear-gradient(135deg, rgba(86, 199, 255, 0.34), rgba(53, 242, 166, 0.18));
+}
+
+.screenshot-placeholder span {
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.screenshot-placeholder strong {
+  font-size: 18px;
+}
+
+.screenshot-placeholder em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.hero-shot {
+  min-height: 560px;
+  border-radius: 22px;
+}
+
 .app-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 22px;
+  margin-bottom: 14px;
 }
 
 .app-bar small,
@@ -320,7 +374,7 @@ h1 {
 }
 
 .app-bar strong {
-  font-size: 24px;
+  font-size: 21px;
 }
 
 .status-dot {
@@ -335,7 +389,7 @@ h1 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   padding: 4px;
-  margin-bottom: 18px;
+  margin-bottom: 12px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.07);
   color: var(--muted);
@@ -345,7 +399,7 @@ h1 {
 }
 
 .segment span {
-  padding: 8px 6px;
+  padding: 7px 6px;
   border-radius: 999px;
 }
 
@@ -358,12 +412,12 @@ h1 {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .preview-frame {
   position: relative;
-  min-height: 74px;
+  min-height: 42px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -374,8 +428,8 @@ h1 {
 
 .preview-frame::after {
   position: absolute;
-  inset: auto 8px 9px;
-  height: 12px;
+  inset: auto 8px 8px;
+  height: 9px;
   border-radius: 999px;
   content: "";
   background: rgba(7, 9, 15, 0.5);
@@ -401,41 +455,43 @@ h1 {
 }
 
 .prompt-box {
-  min-height: 172px;
-  padding: 16px;
-  margin-bottom: 14px;
+  min-height: 102px;
+  padding: 11px;
+  margin-bottom: 8px;
   border-radius: 8px;
 }
 
 .prompt-box p {
-  margin: 10px 0 0;
+  margin: 6px 0 0;
   color: #eaf3fb;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .control-row {
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  padding: 14px;
-  margin-bottom: 14px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
   border-radius: 8px;
 }
 
 .control-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-bottom: 18px;
+  gap: 7px;
+  margin-bottom: 8px;
 }
 
 .control-grid div {
-  padding: 14px;
+  padding: 8px 9px;
   border-radius: 8px;
 }
 
 .mock-primary {
   width: 100%;
-  min-height: 50px;
+  min-height: 42px;
   border: 0;
   border-radius: 999px;
   color: #06100c;
@@ -450,8 +506,8 @@ h1 {
   grid-template-columns: auto 1fr;
   gap: 2px 10px;
   align-items: center;
-  margin: -2px 0 14px;
-  padding: 11px 12px;
+  margin: -1px 0 8px;
+  padding: 7px 9px;
   border: 1px solid rgba(53, 242, 166, 0.24);
   border-radius: 8px;
   background: rgba(53, 242, 166, 0.08);
@@ -585,6 +641,17 @@ h1 {
   background: linear-gradient(110deg, transparent 0 36%, rgba(255, 255, 255, 0.08) 44%, transparent 52%);
   transform: translateX(-120%);
   animation: screenSheen 7s ease-in-out infinite;
+}
+
+.mini-screen.screenshot-placeholder {
+  padding: 18px;
+}
+
+.mini-screen.screenshot-placeholder::before {
+  position: static;
+  inset: auto;
+  transform: none;
+  animation: none;
 }
 
 .mini-app-bar {
@@ -1064,7 +1131,8 @@ h1 {
   line-height: 1.12;
 }
 
-.feature-diagram {
+.feature-diagram,
+.feature-shot {
   position: relative;
   min-height: 260px;
   border: 1px solid var(--line);
@@ -1073,6 +1141,10 @@ h1 {
     radial-gradient(circle at 20% 16%, rgba(53, 242, 166, 0.18), transparent 48px),
     linear-gradient(145deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.18));
   overflow: hidden;
+}
+
+.feature-shot {
+  border-style: dashed;
 }
 
 .feature-diagram::before {
@@ -1435,11 +1507,11 @@ h1 {
 @keyframes phoneFloat {
   0%,
   100% {
-    transform: rotate(2deg) translateY(0);
+    transform: translateY(-32px) rotate(2deg);
   }
 
   50% {
-    transform: rotate(2deg) translateY(-12px);
+    transform: translateY(-44px) rotate(2deg);
   }
 }
 
@@ -1571,11 +1643,16 @@ h1 {
 
   .hero {
     min-height: auto;
-    padding-top: 54px;
+    padding-top: 42px;
+  }
+
+  .hero-visual {
+    place-items: center;
   }
 
   .main-phone {
-    transform: none;
+    transform: translateY(-12px);
+    animation: none;
   }
 
   .screens-grid,
@@ -1605,8 +1682,8 @@ h1 {
   }
 
   .hero {
-    padding-top: 42px;
-    gap: 36px;
+    padding-top: 34px;
+    gap: 30px;
   }
 
   h1 {
@@ -1630,8 +1707,27 @@ h1 {
   }
 
   .app-preview {
-    min-height: 560px;
-    padding: 18px;
+    padding: 15px;
+  }
+
+  .phone-shell {
+    width: min(100%, 340px);
+  }
+
+  .hero-visual {
+    overflow: visible;
+  }
+
+  .main-phone {
+    transform: translateY(-8px);
+  }
+
+  .preview-frame {
+    min-height: 48px;
+  }
+
+  .prompt-box {
+    min-height: 116px;
   }
 
   .section {
