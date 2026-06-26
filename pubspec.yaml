@@ -2,7 +2,7 @@ name: weaveflux
 description: Client-only Android AI video generation app.
 publish_to: "none"
 
-version: 0.1.7+8
+version: 0.1.8+9
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
@@ -10,6 +10,8 @@ environment:
 dependencies:
   dio: ^5.9.2
   file_picker: ^10.3.7
+  firebase_analytics: ^12.4.3
+  firebase_core: ^4.11.0
   flutter:
     sdk: flutter
   flutter_secure_storage: ^9.2.4
