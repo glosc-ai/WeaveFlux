@@ -1,4 +1,4 @@
-package com.example.weaveflux
+package com.gloscai.weaveflux
 
 import android.content.ContentValues
 import android.app.DownloadManager
